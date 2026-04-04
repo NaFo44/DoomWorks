@@ -4,12 +4,17 @@ Originally a port of prBoom to the GBA, then ported to the Numworks calculator.
 
 Works on both simulator **AND REAL DEVICE** (only tested on N0110) !
 
+![Picture of the game running on real device wow amazing](pic.jpg){height=150}
+![Video of the game running on real device wow amazing](vid.mp4)
+
 This project uses [GbaWadUtil](https://github.com/doomhack/GbaWadUtil) (by doomhack) from the original GBADoom repo to embed the chosen WAD into the app.
 
 ## IMPORTANT:
 
 **This port is still very much a work in progress / proof of concept !!!**
+
 The biggest challenge when porting this was RAM usage, as a Numworks app only has about **~100KB** of heap available, which is almost nothing when compared to the original PC recommandations (~4MB) and still less than half of the GBA's specs (~256KB).
+
 The available storage space for a Numworks app was also a major constaint, as on my 25.2.0 Epsilon N0110 device, I could only install an app of about 2.4MB total.
 
 As a result, most WADs (including the basic shareware WAD) either won't fit when installing the app on a regular stock Numworks device, or will take too much memory from the Zone allocator and quit.
@@ -21,13 +26,14 @@ Due to issues I have encountered when developping this project, mainly very unre
 To use the bigger memory, add `USE_UNSTABLE_ZONE_HEAP_SIZE=1` when making the project for real device. Adding `GBADOOM_ENABLE_STACK_REUSE=1` also helps a bit with memory usage.
 
 Unfortunately, this bigger zone heap comes at the cost of the OS (Epsilon) crashing every single time I try to exit the app. I have no idea why this happens, if it only happens on newer OS versions, on my N0110, if is it because of a bug in my app... But, a static byte array of 72KB seems to be the upper limit before the OS becomes unstable upon exiting.
+
 Thanks to the [Upsilon](https://getupsilon.web.app/) bootloader, comming back from this crash is quick and painless, but I have no idea of what happens on models other than N0110, or even with the stock bootloader.
 
 From what I have heard, N0120 models have a lot more RAM to work with. However, as I don't have this model, it is untested, and (for now) do not have a bigger zone allocation.
 
 ### WAD size issues:
 
-If your WADs are too big to fit on your device, here are some projects that can help you port your favorite WADs :
+If your WAD is too big to fit on your device, here are some projects that can help you port your favorite WADs :
 
 - [Wadptr](https://github.com/fragglet/wadptr) : A Doom WAD file compressor, almost necessary to port WADs to this project. (by fragglet)
 - [Miniwad](https://github.com/fragglet/miniwad) : A (very) minimalist Doom IWAD, letting you use Wadptr to its full potential. (also by fragglet)
@@ -46,13 +52,13 @@ If you just want a small WAD to test out the engine, I recommand [Squashware Doo
 
 ## Controls:
 
-UP, DOWN, LEFT, RIGHT : D-Pad
-A (Use, Sprint, Menu) : OK
-B (Shoot, Back in menus) : Back
-L (Strafe left) : Shift
-R (Strafe right) : Alpha
-Start (Open menu) : EXE
-Select (Automap) : Toolbox
+- UP, DOWN, LEFT, RIGHT : D-Pad
+- A (Use, Sprint, Menu) : OK
+- B (Shoot, Back in menus) : Back
+- L (Strafe left) : Shift
+- R (Strafe right) : Alpha
+- Start (Open menu) : EXE
+- Select (Automap) : Toolbox
 
 Changing weapon is done with (Shift / Alpha) + OK.
 
