@@ -1,37 +1,62 @@
-## GBADoom
+## DoomWorks (fork of GBADoom by doomhack)
 
-A port of prBoom to the GBA.
+Originally a port of prBoom to the GBA, then ported to the Numworks calculator.
 
-**What's hot?**
+Works on both simulator **AND REAL DEVICE** (only tested on N0110) !
 
-- Supports Doom Shareware, Retail, Ultimate and Doom2 IWADS.
+This project uses [GbaWadUtil](https://github.com/doomhack/GbaWadUtil) (by doomhack) from the original GBADoom repo to embed the chosen WAD into the app.
 
-- Renderer is largely intact. Z-Depth lighting is gone and there is mip-mapping but it's otherwise complete.
+## IMPORTANT:
 
-- Monster behaviour is all intact. (I.e sound propagation etc.)
+**This port is still very much a work in progress / proof of concept !!!**
+The biggest challenge when porting this was RAM usage, as a Numworks app only has about **~100KB** of heap available, which is almost nothing when compared to the original PC recommandations (~4MB) and still less than half of the GBA's specs (~256KB).
+The available storage space for a Numworks app was also a major constaint, as on my 25.2.0 Epsilon N0110 device, I could only install an app of about 2.4MB total.
 
-- Framerate is pretty variable. Simple areas run at ~35fps. Complex areas (Eg: E4M2) chug along at about 10 FPS. It's running around the same as the original GBA Doom1 and Doom2 ports. Doom1 Episodes 1-3 are all completely playable. Episode 4 chugs.
+As a result, most WADs (including the basic shareware WAD) either won't fit when installing the app on a regular stock Numworks device, or will take too much memory from the Zone allocator and quit.
 
-- Sound and music support. Big thanks to BloodShedder for his Chiptune Doom MOD files.
+### RAM / Allocation issues:
 
-**What's not?**
+Due to issues I have encountered when developping this project, mainly very unreliable memory allocations, the "Zone" allocation that is used to load almost all of the data is a static byte array of either 72KB (stable) or 96KB (unstable). This is temporary and I will change it later on.
 
-- My Markdown skills.
+To use the bigger memory, add `USE_UNSTABLE_ZONE_HEAP_SIZE=1` when making the project for real device. Adding `GBADOOM_ENABLE_STACK_REUSE=1` also helps a bit with memory usage.
 
-- Demo compatibility is broken.
+Unfortunately, this bigger zone heap comes at the cost of the OS (Epsilon) crashing every single time I try to exit the app. I have no idea why this happens, if it only happens on newer OS versions, on my N0110, if is it because of a bug in my app... But, a static byte array of 72KB seems to be the upper limit before the OS becomes unstable upon exiting.
+Thanks to the [Upsilon](https://getupsilon.web.app/) bootloader, comming back from this crash is quick and painless, but I have no idea of what happens on models other than N0110, or even with the stock bootloader.
 
-- General optimisation. We're never going to get a perfect 35FPS but I think there is still another 25% left without changing the visual quality/correctness/game behaviour. For reference, the first time I ran a build under the emulator it ran at about 3FPS.
+From what I have heard, N0120 models have a lot more RAM to work with. However, as I don't have this model, it is untested, and (for now) do not have a bigger zone allocation.
 
-- Although it is based on prBoom, most of the engine enhancements (dehacked, limit removing etc) have been reverted back to Vanilla. This is either for memory or performance reasons. Sadly, NUTS.wad and Okuplok are right out!
+### WAD size issues:
 
-- No multiplayer. 
+If your WADs are too big to fit on your device, here are some projects that can help you port your favorite WADs :
 
+- [Wadptr](https://github.com/fragglet/wadptr) : A Doom WAD file compressor, almost necessary to port WADs to this project. (by fragglet)
+- [Miniwad](https://github.com/fragglet/miniwad) : A (very) minimalist Doom IWAD, letting you use Wadptr to its full potential. (also by fragglet)
 
+**Miniwad + Wadptr = A tiny WAD that can (probably) fit into your Numworks.**
 
-KippyKip is maintaining an upstream fork with new features and fixes. [KippyKip GBA fork](https://github.com/Kippykip/GBADoom)
+In case you need even more space, you can use [Nwagra](https://yaya-cout.github.io/Nwagyu/guide/help/enlarge-your-memory.html) (by yaya-cout), a tool letting you use up to 6MB to install apps (for N0110, N0115 and N0120) !
 
+If you just want a small WAD to test out the engine, I recommand [Squashware Doom](https://github.com/fragglet/squashware) (by fragglet). The silent 1-level version of this fits perfectly and runs at full-speed.
 
-## Cheats:
+## To do:
+
+- Make a better zone allocation system (utilize the extra RAM of the N0120, use dynamic allocations)
+- Fork [GbaWadUtil](https://github.com/doomhack/GbaWadUtil) to make an easier to use version that strips the music + SFX from the WADs (for now, Numworks calculators don't have speakers, but maybe in the future !)
+- Optimize as much as possible !
+
+## Controls:
+
+UP, DOWN, LEFT, RIGHT : D-Pad
+A (Use, Sprint, Menu) : OK
+B (Shoot, Back in menus) : Back
+L (Strafe left) : Shift
+R (Strafe right) : Alpha
+Start (Open menu) : EXE
+Select (Automap) : Toolbox
+
+Changing weapon is done with (Shift / Alpha) + OK.
+
+## Cheats (from the original GBADoom):
 **Chainsaw:** L, UP, UP, LEFT, L, SELECT, SELECT, UP  
 **God mode:** UP, UP, DOWN, DOWN, LEFT, LEFT, RIGHT, RIGHT  
 **Ammo & Keys:** L, LEFT, R, RIGHT, SELECT,UP, SELECT, UP  
@@ -46,48 +71,56 @@ KippyKip is maintaining an upstream fork with new features and fixes. [KippyKip 
 **Enemy Rockets (Goldeneye):** A, B, L, R, R, L, B, A  
 **Toggle FPS counter:** A, B, L, UP, DOWN, B, LEFT, LEFT  
 
-## Controls:  
-**Fire:** B  
-**Use / Sprint:** A  
-**Walk:** D-Pad  
-**Strafe:** L & R  
-**Automap:** SELECT  
-**Weapon up:** A + R  
-**Weapon down:** A + L  
-**Menu:** Start  
+## Building and running (current repo workflow):
 
-## Building:
+This repository uses the top-level `Makefile` to build and run the NumWorks app.  
+[GbaWadUtil](https://github.com/doomhack/GbaWadUtil) (used to embed WADs into the project to save on RAM) is already wired in and is called automatically when embedding a WAD.
 
-To build the GBA version, you will need DevKitArm. The easiest way to get up and running for Windows users is download the installer from here (https://github.com/devkitPro/installer/releases) and install the GBA dev components.
+### Requirements
 
-You will also need to use GBAWadUtil, included in the "GBAWadUtil\" directory. Alternatively download the latest build from the main source: (https://github.com/doomhack/GbaWadUtil). Windows (x64) users can download the Binary release from the releases page.
+- `make`
+- A working C/C++ build environment for the NumWorks app toolchain used by `numworks_app/`
+- `epsilon.bin` (Linux) or `epsilon.app` (macOS) in the repository root for simulator runs
+- `npx` (for `nwlink`) if you want to install on a real device
 
-1) Download or Clone GBADoom source code.
-Extract the contents to a folder: (Eg: C:\DevKitPro\Projects\GBADoom)
+### Run on a NumWorks device
 
-2) Use GBAWadUtil to create a header file with the WAD data. Retail, Ultimate and Doom2 wads have been tested. Plutonia and TNT should mostly work. 
-Open a command prompt.
-Type the following:
-**GbaWadUtil.exe -in doom.wad -cfile doom.wad.c**
-And copy it to the **source\\iwad\\** directory.
-Alternatively just run the **build_XXXX.bat** files and it'll create it in the source\iwad\ path.
+Embed the WAD in the app :
 
-3) Open C:\DevKitPro\Projects\GBADoom\source\doom_iwad.h in text editor or code editor of your choice.
-4) Change the first line to #include "iwad/**yourfile**.c" e.g.
-#include "iwad/doom1.c"
-#include "iwad/doom.c"
-#include "iwad/doom2.c"
-#include "iwad/tnt.c"
-#include "iwad/plutonia.c"
+```bash
+make PLATFORM=device run WAD=doom1.wad GBADOOM_ENABLE_STACK_REUSE=1 USE_UNSTABLE_ZONE_HEAP_SIZE=1 USE_EXTERNAL_IWAD=0 -j4
+```
 
-5) Run msys2.bat and type **make**
-You may need to edit the msys2.bat with notepad and change the path to go to your real "**msys2\msys2_shell.bat**" file within it if it doesn't work.
+Notes:
 
-6) The project should build GBADoom.gba and GBADoom.elf. It will take about 5 minutes or so. You may see a lot of warning messages on the screen. These are normal.
+- Embedded WAD source files are generated under `source/iwad/` automatically.
 
-7) Copy GBADoom.gba (this is the rom file) to your flash cart or run in a emulator.
+### Run on simulator
 
+Build and run with a WAD:
 
-## Developers:
+```bash
+make PLATFORM=simulator run WAD=doom1.wad -j4
+```
 
-For development, this project also builds for Windows with Qt. Use the MingW 32bit version or MSVC 32bit. The .pro file at the root of the source tree can be opened in Qt Creator.
+Build only:
+
+```bash
+make PLATFORM=simulator build WAD=doom1.wad -j4
+```
+
+Clean:
+
+```bash
+make clean
+```
+
+## For anyone reading the code :
+### WAD format terms used in this repo (non-official terminology)
+
+The terms **vanilla** and **compact** are local project terms, not official Doom formats.
+
+- **Vanilla WAD**: standard Doom map lumps as stored in IWAD / PWAD files (classic vertex / linedef / sidedef / seg layouts, sidedef textures as 8-char names).
+- **Compact WAD**: a WAD processed by [GbaWadUtil](https://github.com/doomhack/GbaWadUtil) where map lumps are preconverted for this engine (for example, sidedef textures become texture indices, and map geometry lumps are expanded into runtime-oriented layouts).
+
+Both represent the same map content. Compact format is a preprocessing / packing step for GBADoom and this port.

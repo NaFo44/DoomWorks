@@ -150,13 +150,23 @@ void I_UpdateNoBlit (void)
 
 void I_FinishUpdate (void)
 {
+    static boolean first_present_checkpoint = true;
+
     if (_g->newpal != NO_PALETTE_CHANGE)
 	{
         I_UploadNewPalette(_g->newpal);
         _g->newpal = NO_PALETTE_CHANGE;
 	}
 
-    I_FinishUpdate_e32(_g->screens[0].data, _g->current_pallete, SCREENWIDTH, SCREENHEIGHT);
+    I_FinishUpdate_e32((const byte*)_g->screens[0].data, _g->current_pallete, SCREENWIDTH, SCREENHEIGHT);
+
+// #ifdef NUMWORKS
+//     if (first_present_checkpoint)
+//     {
+//         I_DebugCheckpoint_e32("After first I_FinishUpdate");
+//         first_present_checkpoint = false;
+//     }
+// #endif
 }
 
 //

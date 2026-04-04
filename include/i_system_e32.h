@@ -26,6 +26,10 @@ void I_SetPallete_e32(const byte* pallete);
 
 void I_ProcessKeyEvents();
 
+void I_DebugCheckpoint_e32(const char* checkpoint);
+void I_DebugLog_e32(const char* message);
+void I_DebugPause_e32(const char* reason);
+
 int I_GetTime_e32(void);
 
 void I_Error (const char *error, ...);

@@ -139,8 +139,14 @@ short* negonearray = (short*)&vram2_spare[240];
 //GBA has 16kb of Video Memory for columns
 //*****************************************
 
+#if defined(NUMWORKS) && PLATFORM_DEVICE
+#define COLUMN_CACHE_SETS 16
+#else
+#define COLUMN_CACHE_SETS 128
+#endif
+
 #ifndef GBA
-static byte columnCache[128*128];
+static byte columnCache[COLUMN_CACHE_SETS * 128];
 #else
     #define columnCache ((byte*)0x6014000)
 #endif
@@ -897,6 +903,9 @@ static const column_t* R_GetColumn(const texture_t* texture, int texcolumn)
 
 static const texture_t* R_GetOrLoadTexture(int tex_num)
 {
+    if (tex_num < 0 || tex_num >= _g->numtextures)
+        return NULL;
+        
     const texture_t* tex = textures[tex_num];
 
     if(!tex)
@@ -1795,7 +1804,7 @@ static void R_DrawColumnInCache(const column_t* patch, byte* cache, int originy,
 #define CACHE_WAYS 4
 
 #define CACHE_MASK (CACHE_WAYS-1)
-#define CACHE_STRIDE (128 / CACHE_WAYS)
+#define CACHE_STRIDE (COLUMN_CACHE_SETS / CACHE_WAYS)
 #define CACHE_KEY_MASK (CACHE_STRIDE-1)
 
 #define CACHE_ENTRY(c, t) ((c << 16 | t))
@@ -1826,7 +1835,7 @@ static unsigned int FindColumnCacheItem(unsigned int texture, unsigned int colum
         cc+=CACHE_STRIDE;
         i+=CACHE_STRIDE;
 
-    } while(i < 128);
+    } while(i < COLUMN_CACHE_SETS);
 
 
     //No space. Random eviction.
@@ -1913,6 +1922,9 @@ static const byte* R_ComposeColumn(const unsigned int texture, const texture_t* 
 static void R_DrawSegTextureColumn(unsigned int texture, int texcolumn, draw_column_vars_t* dcvars)
 {
     const texture_t* tex = R_GetOrLoadTexture(texture);
+
+    if (!tex)
+        return;  // Invalid texture, skip drawing
 
     if(tex->overlapped == 0)
     {
@@ -2772,10 +2784,26 @@ static boolean R_RenderBspSubsector(int bspnum)
     // Found a subsector?
     if (bspnum & NF_SUBSECTOR)
     {
+        int subnum;
+
         if (bspnum == -1)
+        {
             R_Subsector (0);
+        }
         else
-            R_Subsector (bspnum & (~NF_SUBSECTOR));
+        {
+            subnum = bspnum & (~NF_SUBSECTOR);
+
+            if (subnum < 0 || subnum >= _g->numsubsectors)
+            {
+                lprintf(LO_WARN, "R_RenderBspSubsector: invalid subsector %d", subnum);
+                R_Subsector(0);
+            }
+            else
+            {
+                R_Subsector(subnum);
+            }
+        }
 
         return true;
     }
@@ -2806,6 +2834,12 @@ static void R_RenderBSPNode(int bspnum)
         //Front sides.
         while (!R_RenderBspSubsector(bspnum))
         {
+            if (bspnum < 0 || bspnum >= numnodes)
+            {
+                lprintf(LO_WARN, "R_RenderBSPNode: invalid node index %d", bspnum);
+                return;
+            }
+
             if(sp == MAX_BSP_DEPTH)
                 break;
 
@@ -2827,6 +2861,13 @@ static void R_RenderBSPNode(int bspnum)
         //Back sides.
         side = stack[--sp];
         bspnum = stack[--sp];
+
+        if (bspnum < 0 || bspnum >= numnodes)
+        {
+            lprintf(LO_WARN, "R_RenderBSPNode: invalid stacked node index %d", bspnum);
+            return;
+        }
+
         bsp = &nodes[bspnum];
 
         // Possibly divide back space.
@@ -2843,6 +2884,12 @@ static void R_RenderBSPNode(int bspnum)
             //Back side next.
             side = stack[--sp];
             bspnum = stack[--sp];
+
+            if (bspnum < 0 || bspnum >= numnodes)
+            {
+                lprintf(LO_WARN, "R_RenderBSPNode: invalid backtrack node index %d", bspnum);
+                return;
+            }
 
             bsp = &nodes[bspnum];
         }
@@ -3297,25 +3344,33 @@ void P_RunThinkers (void)
 
 
 
-static int I_GetTime_e32(void)
+#ifdef GBA
+static int I_GetTime_e32_hw(void)
 {
     int thistimereply = *((unsigned short*)(0x400010C));
 
     return thistimereply;
 }
+#endif
+
+#ifdef NUMWORKS
+extern int I_GetTime_e32(void);
+#endif
 
 
 int I_GetTime(void)
 {
     int thistimereply;
 
-#ifndef GBA
+#if !defined(GBA) && !defined(NUMWORKS)
 
     clock_t now = clock();
 
     thistimereply = (int)((double)now / ((double)CLOCKS_PER_SEC / (double)TICRATE));
-#else
+#elif defined(NUMWORKS)
     thistimereply = I_GetTime_e32();
+#else
+    thistimereply = I_GetTime_e32_hw();
 #endif
 
     if (thistimereply < _g->lasttimereply)

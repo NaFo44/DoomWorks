@@ -76,8 +76,12 @@
 
 #include "gba_functions.h"
 
-//
-// controls (have defaults)
+#ifdef NUMWORKS
+#include "i_system_e32.h"
+// #define NUMWORKS_CHECKPOINT(msg) I_DebugCheckpoint_e32(msg)
+#else
+// #define NUMWORKS_CHECKPOINT(msg) do { } while (0)
+#endif
 //
 
 const int     key_right = KEYD_RIGHT;
@@ -323,6 +327,8 @@ void G_BuildTiccmd(ticcmd_t* cmd)
 
 static void G_DoLoadLevel (void)
 {
+    // NUMWORKS_CHECKPOINT("G_DoLoadLevel: start");
+
     // Set the sky map.
     // First thing, we have a dummy sky texture name,
     //  a flat. The data is in the WAD only because
@@ -330,6 +336,8 @@ static void G_DoLoadLevel (void)
     //  setting one.
 
     _g->skyflatnum = R_FlatNumForName ( SKYFLATNAME );
+
+    // NUMWORKS_CHECKPOINT("G_DoLoadLevel: sky flat loaded");
 
     // DOOM determines the sky texture to be used
     // depending on the current episode, and the game version.
@@ -359,6 +367,8 @@ static void G_DoLoadLevel (void)
                 break;
         }//jff 3/27/98 end sky setting fix
 
+    // NUMWORKS_CHECKPOINT("G_DoLoadLevel: sky texture loaded");
+
     /* cph 2006/07/31 - took out unused levelstarttic variable */
 
     if (_g->wipegamestate == GS_LEVEL)
@@ -379,8 +389,11 @@ static void G_DoLoadLevel (void)
     DECLARE_BLOCK_MEMORY_ALLOC_ZONE(secnodezone);
     NULL_BLOCK_MEMORY_ALLOC_ZONE(secnodezone);
 
+    // NUMWORKS_CHECKPOINT("G_DoLoadLevel: about to P_SetupLevel");
 
     P_SetupLevel (_g->gameepisode, _g->gamemap, 0, _g->gameskill);
+
+    // NUMWORKS_CHECKPOINT("G_DoLoadLevel: P_SetupLevel returned");
 
     _g->gameaction = ga_nothing;
     Z_CheckHeap ();
@@ -391,6 +404,8 @@ static void G_DoLoadLevel (void)
     // killough 5/13/98: in case netdemo has consoleplayer other than green
     ST_Start();
     HU_Start();
+
+    // NUMWORKS_CHECKPOINT("G_DoLoadLevel: done");
 }
 
 
@@ -862,8 +877,7 @@ void G_UpdateSaveGameStrings()
             if(_g->gamemode == commercial)
             {
                 strcpy(_g->savegamestrings[i], "MAP ");
-
-                itoa(saveslots[i].gamemap, &_g->savegamestrings[i][4], 10);
+                snprintf(&_g->savegamestrings[i][4], 4, "%d", saveslots[i].gamemap);
             }
             else
             {
@@ -1051,6 +1065,8 @@ void G_DoNewGame (void)
 
 void G_InitNew(skill_t skill, int episode, int map)
 {
+    // NUMWORKS_CHECKPOINT("G_InitNew: start");
+
     if (skill > sk_nightmare)
         skill = sk_nightmare;
 
@@ -1077,6 +1093,8 @@ void G_InitNew(skill_t skill, int episode, int map)
     if (map > 9 && _g->gamemode != commercial)
         map = 9;
 
+    // NUMWORKS_CHECKPOINT("G_InitNew: parameters set");
+
     M_ClearRandom();
 
     _g->respawnmonsters = skill == sk_nightmare;
@@ -1091,7 +1109,11 @@ void G_InitNew(skill_t skill, int episode, int map)
 
     _g->totalleveltimes = 0; // cph
 
+    // NUMWORKS_CHECKPOINT("G_InitNew: state set, about to DoLoadLevel");
+
     G_DoLoadLevel ();
+
+    // NUMWORKS_CHECKPOINT("G_InitNew: DoLoadLevel returned");
 }
 
 //

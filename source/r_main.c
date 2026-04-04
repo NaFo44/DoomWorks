@@ -54,6 +54,13 @@
 #include "i_system.h"
 #include "g_game.h"
 
+#ifdef NUMWORKS
+#include "i_system_e32.h"
+#define NUMWORKS_R_CHECKPOINT(msg) I_DebugCheckpoint_e32(msg)
+#else
+#define NUMWORKS_R_CHECKPOINT(msg) do { } while (0)
+#endif
+
 #include "global_data.h"
 
 // Fineangles in the SCREENWIDTH wide window.
@@ -65,14 +72,23 @@
 
 void R_Init (void)
 {
+    // NUMWORKS_R_CHECKPOINT("R_Init: before R_LoadTrigTables");
   lprintf(LO_INFO, "R_LoadTrigTables");
   R_LoadTrigTables();
+
+    // NUMWORKS_R_CHECKPOINT("R_Init: after R_LoadTrigTables");
   lprintf(LO_INFO, "R_InitData");
   R_InitData();
+
+    // NUMWORKS_R_CHECKPOINT("R_Init: after R_InitData");
   lprintf(LO_INFO, "R_InitPlanes");
   R_InitPlanes();
+
+    // NUMWORKS_R_CHECKPOINT("R_Init: after R_InitPlanes");
   lprintf(LO_INFO, "R_InitBuffer");
   R_InitBuffer();
+
+    // NUMWORKS_R_CHECKPOINT("R_Init: after R_InitBuffer");
 }
 
 //

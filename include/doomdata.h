@@ -85,6 +85,16 @@ typedef struct {
   short sector;  // Front sector, towards viewer.
 } PACKEDATTR mapsidedef_t;
 
+// Vanilla sidedef format with char[8] texture names
+typedef struct {
+  short textureoffset;
+  short rowoffset;
+  char toptexture[8];
+  char bottomtexture[8];
+  char midtexture[8];
+  short sector;
+} PACKEDATTR mapvanillasidedef_t;
+
 // A LineDef, as used for editing, and as input to the BSP builder.
 
 typedef struct {

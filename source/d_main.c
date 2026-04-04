@@ -75,17 +75,37 @@
 #include "doom_iwad.h"
 #include "global_data.h"
 
+#ifdef NUMWORKS
+#include "i_system_e32.h"
+#define NUMWORKS_CHECKPOINT(msg) I_DebugCheckpoint_e32(msg)
+#else
+#define NUMWORKS_CHECKPOINT(msg) do { } while (0)
+#endif
+
 void GetFirstMap(int *ep, int *map); // Ty 08/29/98 - add "-warp x" functionality
 static void D_PageDrawer(void);
 static void D_UpdateFPS(void);
+
+static unsigned int ReadLE32(const unsigned char* p)
+{
+    return (unsigned int)p[0]
+        | ((unsigned int)p[1] << 8)
+        | ((unsigned int)p[2] << 16)
+        | ((unsigned int)p[3] << 24);
+}
 
 
 // CPhipps - removed wadfiles[] stuff
 
 
 //jff 1/22/98 parms for disabling music and sound
+#ifdef NUMWORKS
+const boolean nosfxparm = true;
+const boolean nomusicparm = true;
+#else
 const boolean nosfxparm = false;
 const boolean nomusicparm = false;
+#endif
 
 const skill_t startskill = sk_medium;
 const int startepisode = 1;
@@ -255,11 +275,31 @@ static void D_Display (void)
 
 static void D_DoomLoop(void)
 {
+    boolean first_loop_checkpoint = true;
+    int trace_loops = 3;
+    int loop_index = 0;
+    int last_debug_tic = -100000;
+
     for (;;)
     {
+        loop_index++;
+
+        boolean trace_this_loop = loop_index <= trace_loops;
+
+        if (first_loop_checkpoint)
+        {
+            NUMWORKS_CHECKPOINT("Entering D_DoomLoop");
+            first_loop_checkpoint = false;
+        }
+
         // frame syncronous IO operations
+        if (trace_this_loop)
+            lprintf(LO_ALWAYS, "[TRACE] Loop: before I_StartFrame");
 
         I_StartFrame();
+
+        if (trace_this_loop)
+            lprintf(LO_ALWAYS, "[TRACE] Loop: after I_StartFrame");
 
         // process one or more tics
         if (_g->singletics)
@@ -279,12 +319,30 @@ static void D_DoomLoop(void)
         else
             TryRunTics (); // will run at least one tic
 
+        if ((_g->gametic - last_debug_tic) >= TICRATE)
+        {
+            unsigned int zfree = Z_GetFreeMemory();
+            char dbg[64];
+            // snprintf(dbg, sizeof(dbg), "[LOOP] gametic=%d gamestate=%d free_zone=%u", _g->gametic, _g->gamestate, zfree);
+            // lprintf(LO_ALWAYS, "%s", dbg);
+            // I_DebugLog_e32(dbg);
+            last_debug_tic = _g->gametic;
+        }
+
+        // if (trace_this_loop)
+        //     lprintf(LO_ALWAYS, "[TRACE] Loop: after tics");
+
         // killough 3/16/98: change consoleplayer to displayplayer
-        if (_g->player.mo) // cph 2002/08/10
+        if (_g->player.mo && !nosfxparm) // cph 2002/08/10
             S_UpdateSounds(_g->player.mo);// move positional sounds
 
         // Update display, next frame, with current state.
+        // if (trace_this_loop)
+        //     lprintf(LO_ALWAYS, "[TRACE] Loop: before D_Display");
         D_Display();
+
+        // if (trace_this_loop)
+        //     lprintf(LO_ALWAYS, "[TRACE] Loop: after D_Display");
 
 
         if(_g->fps_show)
@@ -377,6 +435,42 @@ static void D_DrawTitle2(const char *name)
     D_SetPageName(name);
 }
 
+static boolean D_IsPlausibleDemoVersion(byte demover)
+{
+    return ((demover >= 0 && demover <= 4) ||
+            (demover >= 104 && demover <= 111) ||
+            (demover >= 200 && demover <= 214));
+}
+
+static boolean D_IsDemoStateRunnable(const char *name)
+{
+    char basename[9];
+    int lumpnum;
+    int lumplen;
+
+    if (name == NULL)
+    {
+        return false;
+    }
+
+    ExtractFileBase(name, basename);
+    basename[8] = 0;
+
+    lumpnum = W_CheckNumForName(basename);
+    if (lumpnum < 0)
+    {
+        return false;
+    }
+
+    lumplen = W_LumpLength(lumpnum);
+    if (lumplen < 16)
+    {
+        return false;
+    }
+
+    return true;
+}
+
 /* killough 11/98: tabulate demo sequences
  */
 
@@ -446,6 +540,9 @@ const demostates[][4] =
 
 void D_DoAdvanceDemo(void)
 {
+    int attempts;
+    int mode_index;
+
     _g->player.playerstate = PST_LIVE;  /* not reborn */
     _g->advancedemo = _g->usergame = false;
     _g->gameaction = ga_nothing;
@@ -453,11 +550,47 @@ void D_DoAdvanceDemo(void)
     _g->pagetic = TICRATE * 11;         /* killough 11/98: default behavior */
     _g->gamestate = GS_DEMOSCREEN;
 
+    mode_index = (int)_g->gamemode;
+    if (mode_index < 0 || mode_index > 3)
+    {
+        lprintf(LO_WARN, "D_DoAdvanceDemo: invalid gamemode index %d, forcing shareware sequence", mode_index);
+        mode_index = 0;
+    }
 
-    if (!demostates[++_g->demosequence][_g->gamemode].func)
-        _g->demosequence = 0;
+    for (attempts = 0; attempts < 16; attempts++)
+    {
+        const char *name;
+        void (*func)(const char *);
 
-    demostates[_g->demosequence][_g->gamemode].func(demostates[_g->demosequence][_g->gamemode].name);
+        if (!demostates[++_g->demosequence][mode_index].func)
+            _g->demosequence = 0;
+
+        func = demostates[_g->demosequence][mode_index].func;
+        name = demostates[_g->demosequence][mode_index].name;
+
+#ifdef NUMWORKS
+        if (func == G_DeferedPlayDemo)
+        {
+            lprintf(LO_WARN, "D_DoAdvanceDemo: skipping demo '%s' on NumWorks", name ? name : "<null>");
+            continue;
+        }
+#endif
+
+        if (func == G_DeferedPlayDemo && !D_IsDemoStateRunnable(name))
+        {
+            lprintf(LO_WARN, "D_DoAdvanceDemo: skipping demo '%s' (missing/invalid)", name ? name : "<null>");
+#ifdef NUMWORKS
+            I_DebugLog_e32("skip invalid demo");
+#endif
+            continue;
+        }
+
+        func(name);
+        return;
+    }
+
+    lprintf(LO_WARN, "D_DoAdvanceDemo: no runnable demo states, forcing title");
+    D_DrawTitle1("TITLEPIC");
 }
 
 //
@@ -486,40 +619,66 @@ void D_StartTitle (void)
 
 static void CheckIWAD2(const unsigned char* iwad_data, const unsigned int iwad_len, GameMode_t *gmode,boolean *hassec)
 {
-    const wadinfo_t* header = (const wadinfo_t*)iwad_data;
-
     int ud=0,rg=0,sw=0,cm=0,sc=0;
+        unsigned int numlumps;
+        unsigned int infotableofs;
+        unsigned int lump_table_size;
 
-    if(!strncmp(header->identification, "IWAD", 4))
+        if (iwad_len < 12)
     {
-        size_t length = header->numlumps;
-        const filelump_t* fileinfo = (const filelump_t*)&iwad_data[header->infotableofs];
+                I_Error("CheckIWAD: IWAD too small");
+        }
+
+        if (strncmp((const char*)iwad_data, "IWAD", 4))
+        {
+                I_Error("CheckIWAD: IWAD tag not present");
+        }
+
+        numlumps = ReadLE32(iwad_data + 4);
+        infotableofs = ReadLE32(iwad_data + 8);
+
+        if (numlumps > 0x0fffffffU)
+        {
+                I_Error("CheckIWAD: invalid lump count");
+        }
+
+        lump_table_size = numlumps * (unsigned int)sizeof(filelump_t);
+        if (infotableofs > iwad_len || lump_table_size > (iwad_len - infotableofs))
+        {
+                I_Error("CheckIWAD: invalid lump table");
+        }
+
+        {
+                size_t length = numlumps;
 
         while (length--)
         {
-            if (fileinfo[length].name[0] == 'E' && fileinfo[length].name[2] == 'M' && fileinfo[length].name[4] == 0)
+                        const unsigned char* lump = &iwad_data[infotableofs + (unsigned int)(length * sizeof(filelump_t))];
+                        const char* name = (const char*)(lump + 8);
+
+                        if (name[0] == 'E' && name[2] == 'M' && name[4] == 0)
             {
-              if (fileinfo[length].name[1] == '4')
+                            if (name[1] == '4')
                 ++ud;
-              else if (fileinfo[length].name[1] == '3')
+                            else if (name[1] == '3')
                 ++rg;
-              else if (fileinfo[length].name[1] == '2')
+                            else if (name[1] == '2')
                 ++rg;
-              else if (fileinfo[length].name[1] == '1')
+                            else if (name[1] == '1')
                 ++sw;
             }
-            else if (fileinfo[length].name[0] == 'M' && fileinfo[length].name[1] == 'A' && fileinfo[length].name[2] == 'P' && fileinfo[length].name[5] == 0)
+                        else if (name[0] == 'M' && name[1] == 'A' && name[2] == 'P' && name[5] == 0)
             {
               ++cm;
-              if (fileinfo[length].name[3] == '3')
+                            if (name[3] == '3')
               {
-                  if (fileinfo[length].name[4] == '1' || fileinfo[length].name[4] == '2')
+                                    if (name[4] == '1' || name[4] == '2')
                     ++sc;
               }
             }
 			//Final Doom IWAD check hacks ~Kippykip
 			//TNT - MURAL1
-			else if (fileinfo[length].name[0] == 'M' && fileinfo[length].name[1] == 'U' && fileinfo[length].name[2] == 'R'  && fileinfo[length].name[3] == 'A' && fileinfo[length].name[4] == 'L' && fileinfo[length].name[5] == '1' && fileinfo[length].name[6] == 0)
+			else if (name[0] == 'M' && name[1] == 'U' && name[2] == 'R'  && name[3] == 'A' && name[4] == 'L' && name[5] == '1' && name[6] == 0)
             {
 				*gmode = commercial;
 				_g->gamemission = pack_tnt;
@@ -527,7 +686,7 @@ static void CheckIWAD2(const unsigned char* iwad_data, const unsigned int iwad_l
 				return;
             }
 			//Plutonia - WFALL1
-			else if (fileinfo[length].name[0] == 'W' && fileinfo[length].name[1] == 'F' && fileinfo[length].name[2] == 'A'  && fileinfo[length].name[3] == 'L' && fileinfo[length].name[4] == 'L' && fileinfo[length].name[5] == '1' && fileinfo[length].name[6] == 0)
+			else if (name[0] == 'W' && name[1] == 'F' && name[2] == 'A'  && name[3] == 'L' && name[4] == 'L' && name[5] == '1' && name[6] == 0)
             {
 				*gmode = commercial;
 				_g->gamemission = pack_plut;
@@ -535,10 +694,6 @@ static void CheckIWAD2(const unsigned char* iwad_data, const unsigned int iwad_l
 				return;
             }
         }
-    }
-    else
-    {
-        I_Error("CheckIWAD: IWAD tag not present");
     }
 
     // Determine game mode from levels present
@@ -584,7 +739,16 @@ static void CheckIWAD2(const unsigned char* iwad_data, const unsigned int iwad_l
 
 static void IdentifyVersion()
 {
-    CheckIWAD2(doom_iwad, doom_iwad_len, &_g->gamemode, &_g->haswolflevels);
+    const unsigned char* iwad_data;
+    unsigned int iwad_len;
+
+    // NUMWORKS_CHECKPOINT("IdentifyVersion: begin");
+    iwad_data = doom_iwad_data();
+    // NUMWORKS_CHECKPOINT("IdentifyVersion: got data");
+    iwad_len = doom_iwad_size();
+    // NUMWORKS_CHECKPOINT("IdentifyVersion: got size");
+    CheckIWAD2(iwad_data, iwad_len, &_g->gamemode, &_g->haswolflevels);
+    // NUMWORKS_CHECKPOINT("IdentifyVersion: parsed IWAD");
 
     /* jff 8/23/98 set gamemission global appropriately in all cases
      * cphipps 12/1999 - no version output here, leave that to the caller
@@ -620,7 +784,10 @@ static void IdentifyVersion()
 
 static void D_DoomMainSetup(void)
 {
+    // NUMWORKS_CHECKPOINT("Entered D_DoomMainSetup");
+
     IdentifyVersion();
+    // NUMWORKS_CHECKPOINT("After IdentifyVersion");
 
     // jff 1/24/98 end of set to both working and command line value
 
@@ -685,45 +852,184 @@ static void D_DoomMainSetup(void)
     //jff 9/3/98 use logical output routine
     lprintf(LO_INFO,"D_InitNetGame.");
     D_InitNetGame();
+    // NUMWORKS_CHECKPOINT("After D_InitNetGame");
 
     //jff 9/3/98 use logical output routine
     lprintf(LO_INFO,"W_Init: Init WADfiles.");
     W_Init(); // CPhipps - handling of wadfiles init changed
+    // NUMWORKS_CHECKPOINT("After W_Init");
 
     //jff 9/3/98 use logical output routine
     lprintf(LO_INFO,"M_Init: Init misc info.");
     M_Init();
+    // NUMWORKS_CHECKPOINT("After M_Init");
 
     //jff 9/3/98 use logical output routine
     lprintf(LO_INFO,"R_Init: DOOM refresh daemon.");
     R_Init();
+    // NUMWORKS_CHECKPOINT("After R_Init");
 
     //jff 9/3/98 use logical output routine
     lprintf(LO_INFO,"P_Init: Init Playloop state.");
     P_Init();
+    // NUMWORKS_CHECKPOINT("After P_Init");
 
     //jff 9/3/98 use logical output routine
+#ifdef NUMWORKS
+    lprintf(LO_INFO,"S_Init: disabled on NumWorks.");
+#else
     lprintf(LO_INFO,"S_Init: Setting up sound.");
     S_Init(_g->snd_SfxVolume /* *8 */, _g->snd_MusicVolume /* *8*/ );
+#endif
+    // NUMWORKS_CHECKPOINT("After S_Init");
 
     //jff 9/3/98 use logical output routine
     lprintf(LO_INFO,"HU_Init: Setting up HUD.");
     HU_Init();
+    // NUMWORKS_CHECKPOINT("After HU_Init");
 
     //jff 9/3/98 use logical output routine
     lprintf(LO_INFO,"ST_Init: Init status bar.");
     ST_Init();
+    // NUMWORKS_CHECKPOINT("After ST_Init");
 
     lprintf(LO_INFO,"G_LoadSettings: Loading settings.");
     G_LoadSettings();
+    // NUMWORKS_CHECKPOINT("After G_LoadSettings");
 
     _g->idmusnum = -1; //jff 3/17/98 insure idmus number is blank
 
     _g->fps_show = false;
 
-    _g->highDetail = false;
+    _g->highDetail = true;
 
     I_InitGraphics();
+    NUMWORKS_CHECKPOINT("After I_InitGraphics");
+
+    {
+    #ifdef NUMWORKS
+        // NUMWORKS_CHECKPOINT("Post I_InitGraphics: checking title/demo lumps");
+    #endif
+        int title_lump = W_CheckNumForName("TITLEPIC");
+        int demo1_lump = W_CheckNumForName("DEMO1");
+        int demo1_len = (demo1_lump >= 0) ? W_LumpLength(demo1_lump) : -1;
+        boolean demo1_ok = (demo1_lump >= 0 && demo1_len >= 16);
+
+        lprintf(LO_ALWAYS, "[BOOT] TITLEPIC lump=%d DEMO1 lump=%d len=%d valid=%d", title_lump, demo1_lump, demo1_len, demo1_ok ? 1 : 0);
+#ifdef NUMWORKS
+        {
+            char boot_dbg[64];
+            snprintf(boot_dbg, sizeof(boot_dbg), "BOOT T=%d D=%d L=%d V=%d", title_lump, demo1_lump, demo1_len, demo1_ok ? 1 : 0);
+            I_DebugCheckpoint_e32(boot_dbg);
+        }
+#endif
+
+        if (timedemo == NULL && (title_lump == -1 || !demo1_ok))
+        {
+            int first_ep = 0;
+            int first_map = 0;
+
+            lprintf(LO_WARN, "D_DoomMainSetup: invalid title/demo resources, choosing direct level start.");
+#ifdef NUMWORKS
+            // NUMWORKS_CHECKPOINT("Boot fallback: direct level start");
+#endif
+
+#ifdef NUMWORKS
+            // NUMWORKS_CHECKPOINT("Checking E1M1...");
+#endif
+            if (W_CheckNumForName("E1M1") != -1)
+            {
+#ifdef NUMWORKS
+                // NUMWORKS_CHECKPOINT("Found E1M1");
+#endif
+                first_ep = 1;
+                first_map = 1;
+
+                if (_g->gamemode == indetermined)
+                {
+                    _g->gamemode = shareware;
+                    _g->gamemission = doom;
+                }
+            }
+            else
+            {
+#ifdef NUMWORKS
+                // NUMWORKS_CHECKPOINT("Checking MAP01...");
+#endif
+                if (W_CheckNumForName("MAP01") != -1)
+                {
+#ifdef NUMWORKS
+                    // NUMWORKS_CHECKPOINT("Found MAP01");
+#endif
+                    first_ep = 0;
+                    first_map = 1;
+
+                    if (_g->gamemode == indetermined)
+                    {
+                        _g->gamemode = commercial;
+                        _g->gamemission = doom2;
+                    }
+                }
+                else
+                {
+#ifdef NUMWORKS
+                    // NUMWORKS_CHECKPOINT("Checking E1M8...");
+#endif
+                    if (W_CheckNumForName("E1M8") != -1)
+                    {
+#ifdef NUMWORKS
+                        // NUMWORKS_CHECKPOINT("Found E1M8");
+#endif
+                        first_ep = 1;
+                        first_map = 8;
+
+                        if (_g->gamemode == indetermined)
+                        {
+                            _g->gamemode = shareware;
+                            _g->gamemission = doom;
+                        }
+                    }
+                    else
+                    {
+#ifdef NUMWORKS
+                        // NUMWORKS_CHECKPOINT("Checking MAP08...");
+#endif
+                        if (W_CheckNumForName("MAP08") != -1)
+                        {
+#ifdef NUMWORKS
+                            // NUMWORKS_CHECKPOINT("Found MAP08");
+#endif
+                            first_ep = 0;
+                            first_map = 8;
+
+                            if (_g->gamemode == indetermined)
+                            {
+                                _g->gamemode = commercial;
+                                _g->gamemission = doom2;
+                            }
+                        }
+                        else
+                        {
+#ifdef NUMWORKS
+                            // NUMWORKS_CHECKPOINT("Calling GetFirstMap...");
+#endif
+                            GetFirstMap(&first_ep, &first_map);
+                        }
+                    }
+                }
+            }
+
+#ifdef NUMWORKS
+            {
+                char init_msg[64];
+                snprintf(init_msg, sizeof(init_msg), "G_InitNew: ep=%d map=%d", first_ep, first_map);
+                NUMWORKS_CHECKPOINT(init_msg);
+            }
+#endif
+            G_InitNew(startskill, first_ep, first_map);
+            return;
+        }
+    }
 
     if (timedemo)
     {
@@ -734,7 +1040,71 @@ static void D_DoomMainSetup(void)
     }
     else
     {
-        D_StartTitle();                 // start up intro loop
+        if (W_CheckNumForName("DEMO1") == -1 || W_CheckNumForName("TITLEPIC") == -1)
+        {
+            int first_ep = 0;
+            int first_map = 0;
+
+            lprintf(LO_WARN, "D_DoomMainSetup: DEMO/TITLE lumps missing, choosing direct level start.");
+
+            if (W_CheckNumForName("E1M1") != -1)
+            {
+                first_ep = 1;
+                first_map = 1;
+
+                if (_g->gamemode == indetermined)
+                {
+                    _g->gamemode = shareware;
+                    _g->gamemission = doom;
+                }
+            }
+            else if (W_CheckNumForName("MAP01") != -1)
+            {
+                first_ep = 0;
+                first_map = 1;
+
+                if (_g->gamemode == indetermined)
+                {
+                    _g->gamemode = commercial;
+                    _g->gamemission = doom2;
+                }
+            }
+            else if (W_CheckNumForName("E1M8") != -1)
+            {
+                first_ep = 1;
+                first_map = 8;
+
+                if (_g->gamemode == indetermined)
+                {
+                    _g->gamemode = shareware;
+                    _g->gamemission = doom;
+                }
+            }
+            else if (W_CheckNumForName("MAP08") != -1)
+            {
+                first_ep = 0;
+                first_map = 8;
+
+                if (_g->gamemode == indetermined)
+                {
+                    _g->gamemode = commercial;
+                    _g->gamemission = doom2;
+                }
+            }
+            else
+            {
+                GetFirstMap(&first_ep, &first_map);
+            }
+
+            G_InitNew(startskill, first_ep, first_map);
+        }
+        else
+        {
+#ifdef NUMWORKS
+            NUMWORKS_CHECKPOINT("Boot path: starting title loop");
+#endif
+            D_StartTitle();             // start up intro loop
+        }
     }
 }
 
@@ -744,6 +1114,8 @@ static void D_DoomMainSetup(void)
 
 void D_DoomMain(void)
 {
+    NUMWORKS_CHECKPOINT("Entered D_DoomMain");
+
     D_DoomMainSetup(); // CPhipps - setup out of main execution stack
 
     D_DoomLoop ();  // never returns

@@ -488,6 +488,7 @@ const short      *blockmap;              // was short -- killough
 const short      *blockmaplump;          // was short -- killough
 
 fixed_t   bmaporgx, bmaporgy;     // origin of block map
+boolean   blockmap_has_leading_zero; // true when lists start with the classic 0 delimiter
 
 mobj_t    **blocklinks;           // for thing chains
 

@@ -41,6 +41,7 @@
 #endif
 
 #include <fcntl.h>
+#include <string.h>
 
 #include "doomstat.h"
 #include "d_net.h"
@@ -107,10 +108,12 @@ void ExtractFileBase (const char *path, char *dest)
 static void W_AddFile()
 {
     const wadinfo_t* header;
+    const unsigned char* iwad = doom_iwad_data();
+    const unsigned int iwad_len = doom_iwad_size();
 
-    if(doom_iwad_len > 0)
+    if(iwad_len > 0)
     {
-        header = (wadinfo_t*)&doom_iwad[0];
+        header = (wadinfo_t*)&iwad[0];
 
         if (strncmp(header->identification,"IWAD",4))
             I_Error("W_AddFile: Wad file doesn't have IWAD id");
@@ -124,28 +127,21 @@ static int PUREFUNC FindLumpByName(const char* name, const filelump_t** lump)
 {
     const wadinfo_t* header;
     const filelump_t  *fileinfo;
+    const unsigned char* iwad = doom_iwad_data();
+    const unsigned int iwad_len = doom_iwad_size();
 
-    if(doom_iwad_len > 0)
+    if(iwad_len > 0)
     {
-        header = (const wadinfo_t*)&doom_iwad[0];
+        header = (const wadinfo_t*)&iwad[0];
 
-        fileinfo = (filelump_t*)&doom_iwad[header->infotableofs];
+        fileinfo = (filelump_t*)&iwad[header->infotableofs];
 
-        int_64_t nameint = 0;
-        strncpy((char*)&nameint, name, 8);
+        char key[8] = {0};
+        strncpy(key, name, 8);
 
         for(int i = header->numlumps - 1; i >= 0; i--)
         {
-            //This is a bit naughty with alignment.
-            //For x86 doesn't matter because unaligned loads
-            //are fine.
-            //On ARM, unaligned loads are not fine but since it
-            //doesn't have a 64bit load, the compiler will generate
-            //32 bit loads. These vars are 32 aligned.
-
-            int_64_t nameint2 = *(int_64_t*)fileinfo[i].name;
-
-            if(nameint == nameint2)
+            if (memcmp(fileinfo[i].name, key, 8) == 0)
             {
                 *lump = &fileinfo[i];
                 return i;
@@ -161,18 +157,20 @@ static const filelump_t* PUREFUNC FindLumpByNum(int num)
 {
     const wadinfo_t* header;
     const filelump_t  *fileinfo;
+    const unsigned char* iwad = doom_iwad_data();
+    const unsigned int iwad_len = doom_iwad_size();
 
     if(num < 0)
         return NULL;
 
-    if(doom_iwad_len > 0)
+    if(iwad_len > 0)
     {
-        header = (const wadinfo_t*)&doom_iwad[0];
+        header = (const wadinfo_t*)&iwad[0];
 
         if(num >= header->numlumps)
             return NULL;
 
-        fileinfo = (const filelump_t*)&doom_iwad[header->infotableofs];
+        fileinfo = (const filelump_t*)&iwad[header->infotableofs];
 
         return &fileinfo[num];
     }
@@ -277,10 +275,11 @@ int PUREFUNC W_LumpLength(int lump)
 static const void* PUREFUNC W_GetLumpPtr(int lump)
 {
     const filelump_t* l = FindLumpByNum(lump);
+    const unsigned char* iwad = doom_iwad_data();
 
     if(l)
     {
-        return (const void*)&doom_iwad[l->filepos];
+        return (const void*)&iwad[l->filepos];
     }
 
     return NULL;

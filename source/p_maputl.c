@@ -352,13 +352,17 @@ boolean P_BlockLinesIterator(int x, int y, boolean func(const line_t*))
     // Most demos go out of sync, and maybe other problems happen, if we
     // don't consider linedef 0. For safety this should be qualified.
 
-    list++;     // skip 0 starting delimiter                      // phares
+    if (_g->blockmap_has_leading_zero && *list == 0)
+      list++;   // skip classic 0 starting delimiter when present
 
     const int vcount = _g->validcount;
 
     for ( ; *list != -1 ; list++)                                   // phares
     {
         const int lineno = *list;
+
+        if ((unsigned int)lineno >= (unsigned int)_g->numlines)
+            continue;
 
         linedata_t *lt = &_g->linedata[lineno];
 

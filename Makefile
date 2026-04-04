@@ -1,177 +1,85 @@
-#---------------------------------------------------------------------------------
-.SUFFIXES:
-#---------------------------------------------------------------------------------
+PLATFORM ?= simulator
+WAD ?= doom1.wad
+USE_EXTERNAL_IWAD ?= 0
+USE_UNSTABLE_ZONE_HEAP_SIZE ?= 0
 
-ifeq ($(strip $(DEVKITARM)),)
-$(error "Please set DEVKITARM in your environment. export DEVKITARM=<path to>devkitARM")
-endif
+NUMWORKS_APP_DIR ?= $(CURDIR)/numworks_app
 
-include $(DEVKITARM)/gba_rules
-
-#---------------------------------------------------------------------------------
-# TARGET is the name of the output
-# BUILD is the directory where object files & intermediate files will be placed
-# SOURCES is a list of directories containing source code
-# INCLUDES is a list of directories containing extra header files
-# DATA is a list of directories containing binary data
-# GRAPHICS is a list of directories containing files to be processed by grit
-#
-# All directories are specified relative to the project directory where
-# the makefile is found
-#
-#---------------------------------------------------------------------------------
-TARGET		:= $(notdir $(CURDIR))
-BUILD		:= build
-SOURCES		:= source
-INCLUDES	:= include
-DATA		:= data
-MUSIC		:= music
-
-#---------------------------------------------------------------------------------
-# Disable LTO for IWRAM
-#---------------------------------------------------------------------------------
-%.iwram.o: %.iwram.cpp
-	$(SILENTMSG) $(notdir $<)
-	$(SILENTCMD)$(CXX) -MMD -MP -MF $(DEPSDIR)/$*.iwram.d $(CXXFLAGS) -fno-lto -marm -c $< -o $@ $(ERROR_FILTER)
-
-#---------------------------------------------------------------------------------
-%.iwram.o: %.iwram.c
-	$(SILENTMSG) $(notdir $<)
-	$(SILENTCMD)$(CC) -MMD -MP -MF $(DEPSDIR)/$*.iwram.d $(CFLAGS) -fno-lto -marm -c $< -o $@ $(ERROR_FILTER)
-
-#---------------------------------------------------------------------------------
-# options for code generation
-#---------------------------------------------------------------------------------
-ARCH	:=	-mthumb -mthumb-interwork
-
-CFLAGS	:=	-g -Wall -O3 -fgcse-after-reload -gdwarf-4\
-                -mcpu=arm7tdmi -mtune=arm7tdmi -flto=8\
-                -fallow-store-data-races -fpermissive\
-                -DGBA\
-		$(ARCH)
-
-CFLAGS	+=	$(INCLUDE) -std=gnu11
-
-CXXFLAGS:=	$(CFLAGS) -fno-rtti -fno-exceptions
-
-ASFLAGS	:=	-g $(ARCH)
-LDFLAGS	=	-g $(ARCH) -Wl,-Map,$(notdir $*.map)
-
-#---------------------------------------------------------------------------------
-# any extra libraries we wish to link with the project
-#---------------------------------------------------------------------------------
-LIBS	:= -lmm -lgba
-
-
-#---------------------------------------------------------------------------------
-# list of directories containing libraries, this must be the top level containing
-# include and lib
-#---------------------------------------------------------------------------------
-LIBDIRS	:=	$(LIBGBA)
-
-#---------------------------------------------------------------------------------
-# no real need to edit anything past this point unless you need to add additional
-# rules for different file extensions
-#---------------------------------------------------------------------------------
-
-
-ifneq ($(BUILD),$(notdir $(CURDIR)))
-#---------------------------------------------------------------------------------
-
-export OUTPUT	:=	$(CURDIR)/$(TARGET)
-
-export VPATH	:=	$(foreach dir,$(SOURCES),$(CURDIR)/$(dir)) \
-			$(foreach dir,$(DATA),$(CURDIR)/$(dir)) \
-			$(foreach dir,$(GRAPHICS),$(CURDIR)/$(dir))
-
-export DEPSDIR	:=	$(CURDIR)/$(BUILD)
-
-CFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
-CPPFILES	:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp)))
-SFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.s)))
-BINFILES	:=	$(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.*)))
-
-ifneq ($(strip $(MUSIC)),)
-	export AUDIOFILES	:=	$(foreach dir,$(notdir $(wildcard $(MUSIC)/*.*)),$(CURDIR)/$(MUSIC)/$(dir))
-	BINFILES += soundbank.bin
-endif
-
-#---------------------------------------------------------------------------------
-# use CXX for linking C++ projects, CC for standard C
-#---------------------------------------------------------------------------------
-ifeq ($(strip $(CPPFILES)),)
-#---------------------------------------------------------------------------------
-	export LD	:=	$(CC)
-#---------------------------------------------------------------------------------
+HOST_OS := $(shell uname -s)
+ifeq ($(HOST_OS),Darwin)
+SIM_PLATFORM := macos
+SIM_BIN ?= $(CURDIR)/epsilon.app/Contents/MacOS/Epsilon
 else
-#---------------------------------------------------------------------------------
-	export LD	:=	$(CXX)
-#---------------------------------------------------------------------------------
+SIM_PLATFORM := linux
+SIM_BIN ?= $(CURDIR)/epsilon.bin
 endif
-#---------------------------------------------------------------------------------
 
-export OFILES_BIN := $(addsuffix .o,$(BINFILES))
+NWB_FILE := $(NUMWORKS_APP_DIR)/output/$(SIM_PLATFORM)/gbadoom.nwb
+NWA_FILE := $(NUMWORKS_APP_DIR)/output/device/gbadoom.nwa
+WAD_ABS := $(abspath $(WAD))
+WAD_BASENAME := $(notdir $(WAD))
+IWAD_EMBED_NAME := $(subst -,_,$(basename $(WAD_BASENAME)))
+IWAD_C_FILE := $(CURDIR)/source/iwad/$(IWAD_EMBED_NAME).c
+IWAD_INCLUDE_DEFINE := -DEMBEDDED_IWAD_INCLUDE=\"iwad/$(IWAD_EMBED_NAME).c\"
+BUILD_CFG_FILE := $(NUMWORKS_APP_DIR)/output/.gbadoom_build_cfg_$(PLATFORM)
 
-export OFILES_SOURCES := $(CPPFILES:.cpp=.o) $(CFILES:.c=.o) $(SFILES:.s=.o)
+# Size optimization flags (always on)
+GBADOOM_OPT_FLAGS := -Os
 
-export OFILES := $(OFILES_BIN) $(OFILES_SOURCES)
+# Optional stack slot reuse (can expose UB in legacy code, keep off by default)
+GBADOOM_ENABLE_STACK_REUSE ?= 0
+ifeq ($(GBADOOM_ENABLE_STACK_REUSE),1)
+GBADOOM_OPT_FLAGS += -fstack-reuse=all
+endif
 
-export HFILES := $(addsuffix .h,$(subst .,_,$(BINFILES)))
+.PHONY: build run clean
 
-export INCLUDE	:=	$(foreach dir,$(INCLUDES),-iquote $(CURDIR)/$(dir)) \
-					$(foreach dir,$(LIBDIRS),-I$(dir)/include) \
-					-I$(CURDIR)/$(BUILD)
+$(IWAD_C_FILE): $(WAD_ABS) $(CURDIR)/GbaWadUtil/GbaWadUtil
+	@mkdir -p $(dir $@)
+	@echo "[GBADOOM] Embedding $(WAD_BASENAME) into $(notdir $@)"
+	@$(CURDIR)/GbaWadUtil/GbaWadUtil -in "$(WAD_ABS)" -cfile "$@"
 
-export LIBPATHS	:=	$(foreach dir,$(LIBDIRS),-L$(dir)/lib)
+ifeq ($(PLATFORM),device)
+ifeq ($(USE_EXTERNAL_IWAD),1)
+NEEDS_EMBEDDED_IWAD := 0
+else
+NEEDS_EMBEDDED_IWAD := 1
+endif
+else
+NEEDS_EMBEDDED_IWAD := 1
+endif
 
-.PHONY: $(BUILD) clean
+build:
+	@if [ "$(NEEDS_EMBEDDED_IWAD)" = "1" ]; then \
+		$(MAKE) $(IWAD_C_FILE); \
+	fi
+	@mkdir -p $(NUMWORKS_APP_DIR)/output
+	@if [ -f "$(BUILD_CFG_FILE)" ]; then \
+		old_cfg=$$(cat "$(BUILD_CFG_FILE)"); \
+		new_cfg="$(PLATFORM)|$(USE_EXTERNAL_IWAD)|$(WAD_BASENAME)"; \
+		if [ "$$old_cfg" != "$$new_cfg" ]; then \
+			echo "[NUMWORKS] Config changed ($$old_cfg -> $$new_cfg), cleaning stale objects"; \
+			$(MAKE) -C $(NUMWORKS_APP_DIR) PLATFORM=$(PLATFORM) clean; \
+		fi; \
+	fi
+	@echo "$(PLATFORM)|$(USE_EXTERNAL_IWAD)|$(WAD_BASENAME)" > "$(BUILD_CFG_FILE)"
+ifeq ($(PLATFORM),device)
+	$(MAKE) -C $(NUMWORKS_APP_DIR) PLATFORM=device EXTERNAL_DATA=$(WAD_ABS) USE_EXTERNAL_IWAD=$(USE_EXTERNAL_IWAD) USE_UNSTABLE_ZONE_HEAP_SIZE=$(USE_UNSTABLE_ZONE_HEAP_SIZE) EXTRA_CFLAGS='$(GBADOOM_OPT_FLAGS) $(IWAD_INCLUDE_DEFINE)' EXTRA_CXXFLAGS='$(GBADOOM_OPT_FLAGS) $(IWAD_INCLUDE_DEFINE)' build
+else
+	$(MAKE) -C $(NUMWORKS_APP_DIR) PLATFORM=simulator SIMULATOR="$(SIM_BIN)" EXTERNAL_DATA=$(WAD_ABS) USE_EXTERNAL_IWAD=$(USE_EXTERNAL_IWAD) USE_UNSTABLE_ZONE_HEAP_SIZE=$(USE_UNSTABLE_ZONE_HEAP_SIZE) EXTRA_CFLAGS='$(GBADOOM_OPT_FLAGS) $(IWAD_INCLUDE_DEFINE)' EXTRA_CXXFLAGS='$(GBADOOM_OPT_FLAGS) $(IWAD_INCLUDE_DEFINE)' build
+endif
 
-#---------------------------------------------------------------------------------
-$(BUILD):
-	@[ -d $@ ] || mkdir -p $@
-	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
+run: build
+ifeq ($(PLATFORM),device)
+ifeq ($(USE_EXTERNAL_IWAD),1)
+	npx --yes -- nwlink install-nwa --external-data $(WAD_ABS) $(NWA_FILE)
+else
+	npx --yes -- nwlink install-nwa $(NWA_FILE)
+endif
+else
+	$(SIM_BIN) --nwb $(NWB_FILE) --nwb-external-data $(WAD_ABS)
+endif
 
-#---------------------------------------------------------------------------------
 clean:
-	@echo clean ...
-	@rm -fr $(BUILD) $(TARGET).elf $(TARGET).gba
-
-
-#---------------------------------------------------------------------------------
-else
-
-#---------------------------------------------------------------------------------
-# main targets
-#---------------------------------------------------------------------------------
-
-$(OUTPUT).gba	:	$(OUTPUT).elf
-
-$(OUTPUT).elf	:	$(OFILES)
-
-$(OFILES_SOURCES) : $(HFILES)
-
-#---------------------------------------------------------------------------------
-# The bin2o rule should be copied and modified
-# for each extension used in the data directories
-#---------------------------------------------------------------------------------
-
-#---------------------------------------------------------------------------------
-# rule to build soundbank from music files
-#---------------------------------------------------------------------------------
-soundbank.bin soundbank.h : $(AUDIOFILES)
-#---------------------------------------------------------------------------------
-	@mmutil $^ -osoundbank.bin -hsoundbank.h
-
-#---------------------------------------------------------------------------------
-# This rule links in binary data with the .wad extension
-#---------------------------------------------------------------------------------
-%.bin.o	%_bin.h :	%.bin
-#---------------------------------------------------------------------------------
-	@echo $(notdir $<)
-	@$(bin2o)
-
-
--include $(DEPSDIR)/*.d
-#---------------------------------------------------------------------------------------
-endif
-#---------------------------------------------------------------------------------------
+	$(MAKE) -C $(NUMWORKS_APP_DIR) PLATFORM=simulator clean
+	$(MAKE) -C $(NUMWORKS_APP_DIR) PLATFORM=device clean

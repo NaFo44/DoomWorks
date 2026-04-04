@@ -47,7 +47,11 @@
 #define PT_ADDTHINGS    2
 #define PT_EARLYOUT     4
 
+#if defined(NUMWORKS) && PLATFORM_DEVICE
+#define MAXINTERCEPTS 32
+#else
 #define MAXINTERCEPTS 64
+#endif
 
 typedef struct
 {

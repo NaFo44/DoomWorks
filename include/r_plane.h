@@ -46,7 +46,11 @@ void R_ResetPlanes();
 
 
 
+#if defined(NUMWORKS) && PLATFORM_DEVICE
+#define MAXVISPLANES 16    /* must be a power of 2 */
+#else
 #define MAXVISPLANES 32    /* must be a power of 2 */
+#endif
 
 // killough -- hash function for visplanes
 // Empirically verified to be fairly uniform:

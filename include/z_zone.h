@@ -49,6 +49,8 @@
 
 
 void	Z_Init (void);
+unsigned int Z_GetHeapSize(void);
+unsigned int Z_GetFreeMemory(void);
 void*	Z_Malloc (int size, int tag, void **ptr);
 void    Z_Free (void *ptr);
 void    Z_FreeTags (int lowtag, int hightag);

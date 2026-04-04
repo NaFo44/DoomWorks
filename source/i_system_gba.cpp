@@ -336,6 +336,19 @@ void I_ProcessKeyEvents()
     I_PollWServEvents_e32();
 }
 
+void I_DebugCheckpoint_e32(const char* checkpoint)
+{
+    lprintf(LO_ALWAYS, "[CHECKPOINT] %s", checkpoint);
+}
+
+void I_DebugLog_e32(const char* message)
+{
+    if (message != NULL && message[0] != 0)
+    {
+        lprintf(LO_ALWAYS, "[DEBUG] %s", message);
+    }
+}
+
 //**************************************************************************************
 
 #define MAX_MESSAGE_SIZE 1024

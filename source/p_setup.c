@@ -52,6 +52,8 @@
 
 #include "global_data.h"
 
+int R_LoadTextureByName(const char* tex_name);
+
 //
 // P_LoadVertexes
 //
@@ -249,7 +251,68 @@ static void P_LoadLineDefs2(int lump)
 
 static void P_LoadSideDefs (int lump)
 {
-  _g->numsides = W_LumpLength(lump) / sizeof(mapsidedef_t);
+  int lump_size = W_LumpLength(lump);
+  const byte *data = W_CacheLumpNum(lump);
+  boolean can_be_vanilla = (lump_size % sizeof(mapvanillasidedef_t) == 0);
+  boolean can_be_compact = (lump_size % sizeof(mapsidedef_t) == 0);
+  boolean is_vanilla = false;
+
+  if (can_be_vanilla && !can_be_compact)
+  {
+    is_vanilla = true;
+  }
+  else if (!can_be_vanilla && can_be_compact)
+  {
+    is_vanilla = false;
+  }
+  else if (can_be_vanilla && can_be_compact)
+  {
+    // Ambiguous (like vanilla SIDEDEFS lump size divisible by both 30 and 12).
+    // Choose the interpretation with fewer out-of-range sector references.
+    int i;
+    int vanilla_count = lump_size / sizeof(mapvanillasidedef_t);
+    int compact_count = lump_size / sizeof(mapsidedef_t);
+    int vanilla_bad = 0;
+    int compact_bad = 0;
+
+    for (i = 0; i < vanilla_count; i++)
+    {
+      const mapvanillasidedef_t *msd = (const mapvanillasidedef_t *)data + i;
+      unsigned short sector_num = (unsigned short)SHORT(msd->sector);
+      if (sector_num >= _g->numsectors)
+        vanilla_bad++;
+    }
+
+    for (i = 0; i < compact_count; i++)
+    {
+      const mapsidedef_t *msd = (const mapsidedef_t *)data + i;
+      unsigned short sector_num = (unsigned short)SHORT(msd->sector);
+      if (sector_num >= _g->numsectors)
+        compact_bad++;
+    }
+
+    is_vanilla = (vanilla_bad <= compact_bad);
+
+    lprintf(LO_WARN,
+        "P_LoadSideDefs: ambiguous sidedef lump (%d bytes), chose %s (vanilla bad=%d compact bad=%d)\n",
+        lump_size,
+        is_vanilla ? "VANILLA" : "COMPACT",
+        vanilla_bad,
+        compact_bad);
+  }
+  else
+  {
+    I_Error("P_LoadSideDefs: invalid sidedef lump size %d", lump_size);
+  }
+
+  if (is_vanilla)
+    _g->numsides = lump_size / sizeof(mapvanillasidedef_t);
+  else
+    _g->numsides = lump_size / sizeof(mapsidedef_t);
+
+  lprintf(LO_INFO, "P_LoadSideDefs: format=%s numsides=%d\n",
+      is_vanilla ? "VANILLA" : "COMPACT", _g->numsides);
+
   _g->sides = Z_Calloc(_g->numsides,sizeof(side_t),PU_LEVEL,0);
 }
 
@@ -259,35 +322,70 @@ static void P_LoadSideDefs (int lump)
 
 static void P_LoadSideDefs2(int lump)
 {
-    const byte *data = W_CacheLumpNum(lump); // cph - const*, wad lump handling updated
+    const byte *data = W_CacheLumpNum(lump);
+    int lump_size = W_LumpLength(lump);
     int  i;
+    int vanilla_sides = lump_size / sizeof(mapvanillasidedef_t);
+    boolean is_vanilla = (_g->numsides == vanilla_sides);
 
-    for (i=0; i<_g->numsides; i++)
+    if (is_vanilla)
     {
-        register const mapsidedef_t *msd = (const mapsidedef_t *) data + i;
-        register side_t *sd = _g->sides + i;
-        register sector_t *sec;
+        // VANILLA format: texture names as char[8], need to convert to indices
+        for (i=0; i<_g->numsides; i++)
+        {
+            register const mapvanillasidedef_t *msd = (const mapvanillasidedef_t *) data + i;
+            register side_t *sd = _g->sides + i;
+            register sector_t *sec;
 
-        sd->textureoffset = msd->textureoffset;
-        sd->rowoffset = msd->rowoffset;
+            sd->textureoffset = msd->textureoffset;
+            sd->rowoffset = msd->rowoffset;
 
-        { /* cph 2006/09/30 - catch out-of-range sector numbers; use sector 0 instead */
-            unsigned short sector_num = SHORT(msd->sector);
-            if (sector_num >= _g->numsectors)
-            {
-                lprintf(LO_WARN,"P_LoadSideDefs2: sidedef %i has out-of-range sector num %u\n", i, sector_num);
-                sector_num = 0;
+            { /* cph 2006/09/30 - catch out-of-range sector numbers; use sector 0 instead */
+                unsigned short sector_num = SHORT(msd->sector);
+                if (sector_num >= _g->numsectors)
+                {
+                    lprintf(LO_WARN,"P_LoadSideDefs2: sidedef %i has out-of-range sector num %u\n", i, sector_num);
+                    sector_num = 0;
+                }
+                sd->sector = sec = &_g->sectors[sector_num];
             }
-            sd->sector = sec = &_g->sectors[sector_num];
+
+            // Convert texture names to indices
+            sd->midtexture = R_LoadTextureByName(msd->midtexture);
+            sd->toptexture = R_LoadTextureByName(msd->toptexture);
+            sd->bottomtexture = R_LoadTextureByName(msd->bottomtexture);
         }
+    }
+    else
+    {
+        // COMPACT format: texture indices as short, use directly
+        for (i=0; i<_g->numsides; i++)
+        {
+            register const mapsidedef_t *msd = (const mapsidedef_t *) data + i;
+            register side_t *sd = _g->sides + i;
+            register sector_t *sec;
 
-        sd->midtexture = msd->midtexture;
-        sd->toptexture = msd->toptexture;
-        sd->bottomtexture = msd->bottomtexture;
+            sd->textureoffset = msd->textureoffset;
+            sd->rowoffset = msd->rowoffset;
 
-        R_GetTexture(sd->midtexture);
-        R_GetTexture(sd->toptexture);
-        R_GetTexture(sd->bottomtexture);
+            { /* cph 2006/09/30 - catch out-of-range sector numbers; use sector 0 instead */
+                unsigned short sector_num = SHORT(msd->sector);
+                if (sector_num >= _g->numsectors)
+                {
+                    lprintf(LO_WARN,"P_LoadSideDefs2: sidedef %i has out-of-range sector num %u\n", i, sector_num);
+                    sector_num = 0;
+                }
+                sd->sector = sec = &_g->sectors[sector_num];
+            }
+
+            sd->midtexture = msd->midtexture;
+            sd->toptexture = msd->toptexture;
+            sd->bottomtexture = msd->bottomtexture;
+
+            R_GetTexture(sd->midtexture);
+            R_GetTexture(sd->toptexture);
+            R_GetTexture(sd->bottomtexture);
+        }
     }
 }
 
@@ -321,7 +419,13 @@ typedef struct linelist_t        // type used to list lines in each block
 
 static void P_LoadBlockMap (int lump)
 {
+    int i;
+    int leading_zero_blocks = 0;
+    int valid_blocks = 0;
+    int blockmap_short_count;
+
     _g->blockmaplump = W_CacheLumpNum(lump);
+    blockmap_short_count = W_LumpLength(lump) / (int)sizeof(short);
 
     _g->bmaporgx = _g->blockmaplump[0]<<FRACBITS;
     _g->bmaporgy = _g->blockmaplump[1]<<FRACBITS;
@@ -333,6 +437,29 @@ static void P_LoadBlockMap (int lump)
     _g->blocklinks = Z_Calloc (_g->bmapwidth*_g->bmapheight,sizeof(*_g->blocklinks),PU_LEVEL,0);
 
     _g->blockmap = _g->blockmaplump+4;
+
+    // Some generated WADs omit the legacy leading 0 delimiter in each block list.
+    // Detect which representation this lump uses so iterators can parse lists correctly.
+    for (i = 0; i < _g->bmapwidth * _g->bmapheight; i++)
+    {
+        int offset = _g->blockmap[i];
+
+        if (offset < 0 || offset >= blockmap_short_count)
+            continue;
+
+        valid_blocks++;
+        if (_g->blockmaplump[offset] == 0)
+            leading_zero_blocks++;
+    }
+
+    _g->blockmap_has_leading_zero =
+        (valid_blocks > 0) && (leading_zero_blocks * 2 >= valid_blocks);
+
+    lprintf(LO_INFO,
+        "P_LoadBlockMap: leading_zero=%s (%d/%d blocks)\n",
+        _g->blockmap_has_leading_zero ? "yes" : "no",
+        leading_zero_blocks,
+        valid_blocks);
 }
 
 //

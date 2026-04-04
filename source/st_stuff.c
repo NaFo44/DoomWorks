@@ -477,13 +477,18 @@ static void ST_loadGraphics(boolean doload)
 {
     int  i, facenum;
     char namebuf[9];
+    char fallbackbuf[9];
 
     // Load the numbers, tall and short
     for (i=0;i<10;i++)
     {
-        //sprintf(namebuf, "STTNUM%d", i);
-		sprintf(namebuf, "STGANUM%d", i); //Special GBA Doom II Red Numbers ~Kippykip
-        _g->tallnum[i] = (const patch_t *) W_CacheLumpName(namebuf);
+        sprintf(namebuf, "STGANUM%d", i); //Special GBA Doom II Red Numbers ~Kippykip
+        sprintf(fallbackbuf, "STTNUM%d", i);
+
+        if (W_CheckNumForName(namebuf) != -1)
+            _g->tallnum[i] = (const patch_t *) W_CacheLumpName(namebuf);
+        else
+            _g->tallnum[i] = (const patch_t *) W_CacheLumpName(fallbackbuf);
 
         sprintf(namebuf, "STYSNUM%d", i);
         _g->shortnum[i] = (const patch_t *) W_CacheLumpName(namebuf);
@@ -504,9 +509,13 @@ static void ST_loadGraphics(boolean doload)
     for (i=0;i<6;i++)
     {
         sprintf(namebuf, "STGNUM%d", i+2);
+        sprintf(fallbackbuf, "STYSNUM%d", i+2);
 
         // gray #
-        _g->arms[i][0] = (const patch_t *) W_CacheLumpName(namebuf);
+        if (W_CheckNumForName(namebuf) != -1)
+            _g->arms[i][0] = (const patch_t *) W_CacheLumpName(namebuf);
+        else
+            _g->arms[i][0] = (const patch_t *) W_CacheLumpName(fallbackbuf);
 
         // yellow #
         _g->arms[i][1] = (const patch_t *) _g->shortnum[i+2];

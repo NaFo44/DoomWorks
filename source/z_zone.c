@@ -25,6 +25,7 @@
 #include "doomdef.h"
 #include "doomtype.h"
 #include "lprintf.h"
+#include <stdlib.h>
 
 
 //
@@ -40,11 +41,22 @@
 
 #define ZONEID	0x1d4a11
 
+#if defined(NUMWORKS) && PLATFORM_DEVICE
+const unsigned int maxHeapSize = (192 * 1024);
+const unsigned int minHeapSize = (32 * 1024);
+const unsigned int heapStepSize = 512;
+#else
 const unsigned int maxHeapSize = (256 * 1024);
+const unsigned int minHeapSize = (96 * 1024);
+const unsigned int heapStepSize = 1024;
+#endif
 
 #ifndef GBA
     static int running_count = 0;
+#include <stdio.h>
 #endif
+
+static unsigned int s_zone_heap_size = 0;
 
 typedef struct memblock_s
 {
@@ -65,6 +77,37 @@ typedef struct
 
 memzone_t*	mainzone;
 
+#if defined(NUMWORKS) && PLATFORM_DEVICE
+// Fallback when allocator-backed heap doesn't give nearly enough memory
+#ifdef USE_UNSTABLE_ZONE_HEAP_SIZE
+static byte s_numworks_zone_fallback_heap[92 * 1024] __attribute__((aligned(8)));
+#else
+static byte s_numworks_zone_fallback_heap[72 * 1024] __attribute__((aligned(8)));
+#endif
+#endif
+static unsigned int Z_ProbeLargestAlloc(unsigned int startSize, unsigned int stepSize, unsigned int floorSize)
+{
+    unsigned int size = startSize;
+
+    while (size >= floorSize)
+    {
+        void* probe = malloc(size);
+
+        if (probe != NULL)
+        {
+            free(probe);
+            return size;
+        }
+
+        if (size <= stepSize)
+            break;
+
+        size -= stepSize;
+    }
+
+    return 0;
+}
+
 //
 // Z_Init
 //
@@ -73,18 +116,41 @@ void Z_Init (void)
     memblock_t*	block;
 
     unsigned int heapSize = maxHeapSize;
+    mainzone = NULL;
 
-    //We can now alloc all of the rest fo the memory.
-    do
+    // Try progressively smaller heaps but stop at a safe floor.
+    while (heapSize >= minHeapSize)
     {
         mainzone = malloc(heapSize);
-        heapSize -= 4;
 
-    } while(mainzone == NULL);
+        if (mainzone != NULL)
+            break;
 
-    heapSize += 4;
+        heapSize -= heapStepSize;
+    }
 
-    lprintf(LO_INFO,"Z_Init: Heapsize is %d bytes.", heapSize);
+    if (mainzone == NULL)
+    {
+#if defined(NUMWORKS) && PLATFORM_DEVICE
+        mainzone = (memzone_t*)s_numworks_zone_fallback_heap;
+        heapSize = sizeof(s_numworks_zone_fallback_heap);
+        lprintf(LO_WARN, "Z_Init: malloc heap unavailable, using static fallback heap (%u bytes)", heapSize);
+#else
+           const unsigned int probeStart = (minHeapSize > heapStepSize) ? (minHeapSize - heapStepSize) : minHeapSize;
+           const unsigned int largestProbe = Z_ProbeLargestAlloc(probeStart, heapStepSize, 4 * 1024);
+
+           I_Error(
+              "Z_Init: failed to allocate zone heap (min %u bytes)\n"
+              "Target max: %u bytes\n"
+              "Largest contiguous probe: %u bytes",
+              minHeapSize,
+              maxHeapSize,
+              largestProbe);
+#endif
+    }
+
+    lprintf(LO_INFO,"Z_Init: Heapsize is %u bytes.", heapSize);
+    s_zone_heap_size = heapSize;
 
     // set the entire zone to one free block
     mainzone->blocklist.next =
@@ -101,6 +167,32 @@ void Z_Init (void)
     block->user = NULL;
 
     block->size = heapSize - sizeof(memzone_t);
+}
+
+unsigned int Z_GetHeapSize(void)
+{
+    return s_zone_heap_size;
+}
+
+unsigned int Z_GetFreeMemory(void)
+{
+    unsigned int total = 0;
+    memblock_t* block;
+
+    if (mainzone == NULL)
+        return 0;
+
+    block = mainzone->blocklist.next;
+
+    while (block != &mainzone->blocklist)
+    {
+        if (block->user == NULL)
+            total += block->size;
+
+        block = block->next;
+    }
+
+    return total;
 }
 
 
@@ -206,7 +298,11 @@ void* Z_Malloc(int size, int tag, void **user)
         if (rover == start)
         {
             // scanned all the way around the list
+    #ifndef GBA
+                I_Error ("Z_Malloc: failed allocation of %i bytes\nUsed: %d bytes", size, running_count);
+    #else
             I_Error ("Z_Malloc: failed on allocation of %i bytes", size);
+    #endif
         }
 
         if (rover->user)

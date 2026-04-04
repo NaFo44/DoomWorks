@@ -43,6 +43,7 @@
 #include "v_video.h"
 #include "i_video.h"
 #include "lprintf.h"
+#include <stdint.h>
 
 #include "global_data.h"
 #include "gba_functions.h"
@@ -146,7 +147,7 @@ void V_DrawPatch(int x, int y, int scrn, const patch_t* patch)
                 unsigned short color = source[frac >> FRACBITS];
 
                 //The GBA must write in 16bits.
-                if((unsigned int)dest & 1)
+                if(((uintptr_t)dest) & 1U)
                 {
                     //Odd addreses, we combine existing pixel with new one.
                     unsigned short* dest16 = (unsigned short*)(dest - 1);
@@ -185,6 +186,43 @@ void V_DrawNumPatch(int x, int y, int scrn, int lump,
          int cm, enum patch_translation_e flags)
 {
     V_DrawPatch(x, y, scrn, W_CacheLumpNum(lump));
+}
+
+void V_DrawNamePatchSafe(int x, int y, int scrn, const char* name,
+                                 int cm, enum patch_translation_e flags)
+{
+    int lump = W_CheckNumForName(name);
+
+    if (lump < 0)
+    {
+        return;
+    }
+
+    V_DrawNumPatch(x, y, scrn, lump, cm, flags);
+}
+
+int V_NamePatchWidthSafe(const char* name)
+{
+    int lump = W_CheckNumForName(name);
+
+    if (lump < 0)
+    {
+        return 0;
+    }
+
+    return R_NumPatchWidth(lump);
+}
+
+int V_NamePatchHeightSafe(const char* name)
+{
+    int lump = W_CheckNumForName(name);
+
+    if (lump < 0)
+    {
+        return 0;
+    }
+
+    return R_NumPatchHeight(lump);
 }
 
 //
@@ -242,7 +280,7 @@ static void V_PlotPixel(int x, int y, int color)
     byte* dest = &fb[(ScreenYToOffset(y) << 1) + x];
 
     //The GBA must write in 16bits.
-    if((unsigned int)dest & 1)
+    if(((uintptr_t)dest) & 1U)
     {
         //Odd addreses, we combine existing pixel with new one.
         unsigned short* dest16 = (unsigned short*)(dest - 1);

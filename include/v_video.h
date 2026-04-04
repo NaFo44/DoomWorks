@@ -98,16 +98,22 @@ void V_DrawPatch(int x, int y, int scrn, const patch_t* patch);
 void V_DrawPatchNoScale(int x, int y, const patch_t* patch);
 
 
+void V_DrawNamePatchSafe(int x, int y, int scrn, const char* name,
+                                 int cm, enum patch_translation_e flags);
+int V_NamePatchWidthSafe(const char* name);
+int V_NamePatchHeightSafe(const char* name);
+
+
 // V_DrawNamePatch - Draws the patch from lump "name"
-#define V_DrawNamePatch(x,y,s,n,t,f) V_DrawNumPatch(x,y,s,W_GetNumForName(n),t,f)
+#define V_DrawNamePatch(x,y,s,n,t,f) V_DrawNamePatchSafe(x,y,s,n,t,f)
 
 /* cph -
  * Functions to return width & height of a patch.
  * Doesn't really belong here, but is often used in conjunction with
  * this code.
  */
-#define V_NamePatchWidth(name) R_NumPatchWidth(W_GetNumForName(name))
-#define V_NamePatchHeight(name) R_NumPatchHeight(W_GetNumForName(name))
+#define V_NamePatchWidth(name) V_NamePatchWidthSafe(name)
+#define V_NamePatchHeight(name) V_NamePatchHeightSafe(name)
 
 /* cphipps 10/99: function to tile a flat over the screen */
 void V_DrawBackground(const char* flatname);

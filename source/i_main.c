@@ -57,9 +57,38 @@
 #include "lprintf.h"
 #include "global_data.h"
 
+#ifdef NUMWORKS
+#include "i_system_e32.h"
+#endif
+
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
+
+#ifdef NUMWORKS
+const char eadk_app_name[]
+#if PLATFORM_DEVICE
+    __attribute__((section(".rodata.eadk_app_name")))
+#endif
+    = "Doom";
+
+const uint32_t eadk_api_level
+#if PLATFORM_DEVICE
+    __attribute__((section(".rodata.eadk_api_level")))
+#endif
+    = 0;
+
+#if PLATFORM_DEVICE
+void _exit(int status)
+{
+    (void)status;
+    while (1)
+    {
+    }
+}
+#endif
+#endif
 
 /* Most of the following has been rewritten by Lee Killough
  *
@@ -70,8 +99,12 @@
 
 void I_Init(void)
 {
+#ifdef NUMWORKS
+    lprintf(LO_INFO, "I_Init: audio disabled for NumWorks phase-1 bring-up");
+#else
     if (!(nomusicparm && nosfxparm))
         I_InitSound();
+#endif
 }
 
 static void PrintVer(void)
@@ -85,14 +118,39 @@ int main(int argc, const char * const * argv)
     /* cphipps - call to video specific startup code */
     I_PreInitGraphics();
 
+#ifdef NUMWORKS
+    I_DebugCheckpoint_e32("After I_PreInitGraphics");
+#endif
+
     PrintVer();
+
+#ifdef NUMWORKS
+    I_DebugCheckpoint_e32("After PrintVer");
+#endif
 
     //Call this before Z_Init as maxmod uses malloc.
     I_Init();
 
+#ifdef NUMWORKS
+    I_DebugCheckpoint_e32("After I_Init");
+#endif
+
     Z_Init();                  /* 1/18/98 killough: start up memory stuff first */
 
+#ifdef NUMWORKS
+    {
+        char heapMsg[64];
+        snprintf(heapMsg, sizeof(heapMsg), "After Z_Init (zone free RAM: %u)", Z_GetHeapSize());
+        I_DebugCheckpoint_e32(heapMsg);
+    }
+#endif
+
     InitGlobals();
+
+#ifdef NUMWORKS
+    I_DebugCheckpoint_e32("After InitGlobals");
+    I_DebugCheckpoint_e32("Before D_DoomMain");
+#endif
 
     D_DoomMain ();
     return 0;

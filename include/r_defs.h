@@ -59,11 +59,15 @@
 #define SIL_TOP     2
 #define SIL_BOTH    3
 
+#if defined(NUMWORKS) && PLATFORM_DEVICE
+#define MAXDRAWSEGS   104
+#define MAXOPENINGS (SCREENWIDTH*12)
+#define MAXVISSPRITES 32
+#else
 #define MAXDRAWSEGS   192
-
 #define MAXOPENINGS (SCREENWIDTH*16)
-
 #define MAXVISSPRITES 96
+#endif
 
 //
 // INTERNAL MAP TYPES

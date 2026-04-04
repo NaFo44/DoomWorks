@@ -42,8 +42,23 @@
 #include "p_tick.h"
 #include "lprintf.h"  // jff 08/03/98 - declaration of lprintf
 #include "p_tick.h"
+#include <string.h>
+
+#ifdef NUMWORKS
+#include "i_system_e32.h"
+#define NUMWORKS_RDATA_CHECKPOINT(msg) I_DebugCheckpoint_e32(msg)
+#else
+#define NUMWORKS_RDATA_CHECKPOINT(msg) do { } while (0)
+#endif
 
 #include "global_data.h"
+
+static int ReadS32Unaligned(const void* p)
+{
+    int v;
+    memcpy(&v, p, sizeof(v));
+    return v;
+}
 
 //
 // Graphics.
@@ -83,32 +98,54 @@ typedef struct
   mappatch_t patches[1];
 } PACKEDATTR maptexture_t;
 
+static const patch_t* R_GetMissingPatchFallback(const byte* pnames)
+{
+    int pcount = ReadS32Unaligned(pnames);
+    const byte* pnames_data = pnames + 4;
+
+    for (int i = 0; i < pcount; i++)
+    {
+        char pname[9] = {0};
+        memcpy(pname, &pnames_data[i * 8], 8);
+
+        if (W_CheckNumForName(pname) != -1)
+        {
+            return (const patch_t*)W_CacheLumpName(pname);
+        }
+    }
+
+    I_Error("R_LoadTexture: no valid patch lumps available");
+    return NULL;
+}
+
 // A maptexturedef_t describes a rectangular texture, which is composed
 // of one or more mappatch_t structures that arrange graphic patches.
 
 
 static const texture_t* R_LoadTexture(int texture_num)
 {
-    const byte* pnames = W_CacheLumpName("PNAMES");
+    const byte* pnames_lump = W_CacheLumpName("PNAMES");
+    const byte* pnames = pnames_lump + 4;
+    const int pcount = ReadS32Unaligned(pnames_lump);
+    const patch_t* fallback_patch = NULL;
 
-    //Skip to list of names.
-    pnames += 4;
-
-    const int  *maptex1, *maptex2;
-    int  numtextures1, numtextures2;
-    const int *directory1, *directory2;
+    const byte* maptex1;
+    const byte* maptex2;
+    int numtextures1, numtextures2;
+    const byte* directory1;
+    const byte* directory2;
 
 
     maptex1 = W_CacheLumpName("TEXTURE1");
-    numtextures1 = *maptex1;
-    directory1 = maptex1+1;
+    numtextures1 = ReadS32Unaligned(maptex1);
+    directory1 = maptex1 + 4;
 
 
     if (W_CheckNumForName("TEXTURE2") != -1)
     {
         maptex2 = W_CacheLumpName("TEXTURE2");
-        numtextures2 = *maptex2;
-        directory2 = maptex2+1;
+        numtextures2 = ReadS32Unaligned(maptex2);
+        directory2 = maptex2 + 4;
     }
     else
     {
@@ -118,16 +155,16 @@ static const texture_t* R_LoadTexture(int texture_num)
     }
 
     int offset = 0;
-    const int  *maptex = maptex1;
+    const byte* maptex = maptex1;
 
     if(texture_num < numtextures1)
     {
-        offset = directory1[texture_num];
+        offset = ReadS32Unaligned(directory1 + texture_num * 4);
     }
     else if(maptex2 && ((texture_num-numtextures1) < numtextures2) )
     {
         maptex = maptex2;
-        offset = directory2[texture_num-numtextures1];
+        offset = ReadS32Unaligned(directory2 + (texture_num - numtextures1) * 4);
     }
     else
     {
@@ -155,10 +192,38 @@ static const texture_t* R_LoadTexture(int texture_num)
         patch->originx = mpatch->originx;
         patch->originy = mpatch->originy;
 
-        char pname[8];
-        strncpy(pname, (const char*)&pnames[mpatch->patch * 8], 8);
+        char pname[9] = {0};
+        int pname_lump;
 
-        patch->patch = (const patch_t*)W_CacheLumpName(pname);
+        if (mpatch->patch < 0 || mpatch->patch >= pcount)
+        {
+            if (!fallback_patch)
+            {
+                fallback_patch = R_GetMissingPatchFallback(pnames_lump);
+            }
+
+            lprintf(LO_WARN, "R_LoadTexture: invalid patch index %d, using fallback", mpatch->patch);
+            patch->patch = fallback_patch;
+            continue;
+        }
+
+        memcpy(pname, &pnames[mpatch->patch * 8], 8);
+
+        pname_lump = W_CheckNumForName(pname);
+        if (pname_lump == -1)
+        {
+            if (!fallback_patch)
+            {
+                fallback_patch = R_GetMissingPatchFallback(pnames_lump);
+            }
+
+            lprintf(LO_WARN, "R_LoadTexture: missing patch %.8s, using fallback", pname);
+            patch->patch = fallback_patch;
+        }
+        else
+        {
+            patch->patch = (const patch_t*)W_CacheLumpNum(pname_lump);
+        }
     }
 
     for (int j=0 ; j < texture->patchcount ; j++)
@@ -223,9 +288,11 @@ const texture_t* R_GetTexture(int texture)
 
 static int R_GetTextureNumForName(const char* tex_name)
 {
-    const int  *maptex1, *maptex2;
+    const byte* maptex1;
+    const byte* maptex2;
     int  numtextures1;
-    const int *directory1, *directory2;
+    const byte* directory1;
+    const byte* directory2;
 
 
     //Convert name to uppercase for comparison.
@@ -234,7 +301,10 @@ static int R_GetTextureNumForName(const char* tex_name)
     strncpy(tex_name_upper, tex_name, 8);
     tex_name_upper[8] = 0; //Ensure null terminated.
 
-    strupr(tex_name_upper);
+    for (int i = 0; tex_name_upper[i] != 0; i++)
+    {
+        tex_name_upper[i] = (char)toupper((unsigned char)tex_name_upper[i]);
+    }
 
     if(_g->tex_lookup_last_name && (!strncmp(_g->tex_lookup_last_name, tex_name_upper, 8)))
     {
@@ -242,14 +312,14 @@ static int R_GetTextureNumForName(const char* tex_name)
     }
 
     maptex1 = W_CacheLumpName("TEXTURE1");
-    numtextures1 = *maptex1;
-    directory1 = maptex1+1;
+    numtextures1 = ReadS32Unaligned(maptex1);
+    directory1 = maptex1 + 4;
 
 
     if (W_CheckNumForName("TEXTURE2") != -1)
     {
         maptex2 = W_CacheLumpName("TEXTURE2");
-        directory2 = maptex2+1;
+        directory2 = maptex2 + 4;
     }
     else
     {
@@ -257,10 +327,10 @@ static int R_GetTextureNumForName(const char* tex_name)
         directory2 = NULL;
     }
 
-    const int *directory = directory1;
-    const int *maptex = maptex1;
+    const byte* directory = directory1;
+    const byte* maptex = maptex1;
 
-    for (int i=0 ; i<_g->numtextures ; i++, directory++)
+    for (int i=0 ; i<_g->numtextures ; i++, directory += 4)
     {
         if (i == numtextures1)
         {
@@ -269,7 +339,7 @@ static int R_GetTextureNumForName(const char* tex_name)
             directory = directory2;
         }
 
-        int offset = *directory;
+        int offset = ReadS32Unaligned(directory);
 
         const maptexture_t* mtexture = (const maptexture_t *) ( (const byte *)maptex + offset);
 
@@ -309,18 +379,22 @@ int R_LoadTextureByName(const char* tex_name)
 // Initializes the texture list
 //  with the textures from the world map.
 //
-
 static void R_InitTextures()
 {
-    const int* mtex1 = W_CacheLumpName("TEXTURE1");
-    int numtextures1 = *mtex1;
-
+    // NUMWORKS_RDATA_CHECKPOINT("R_InitTextures: enter");
+        const byte* mtex1 = W_CacheLumpName("TEXTURE1");
+    // NUMWORKS_RDATA_CHECKPOINT("R_InitTextures: got TEXTURE1");
+        int numtextures1 = ReadS32Unaligned(mtex1);
+    // NUMWORKS_RDATA_CHECKPOINT("R_InitTextures: read TEXTURE1 count");
     int numtextures2 = 0;
 
     if (W_CheckNumForName("TEXTURE2") != -1)
     {
-        const int* mtex2 = W_CacheLumpName("TEXTURE2");
-        numtextures2 = *mtex2;
+                // NUMWORKS_RDATA_CHECKPOINT("R_InitTextures: has TEXTURE2");
+                const byte* mtex2 = W_CacheLumpName("TEXTURE2");
+                // NUMWORKS_RDATA_CHECKPOINT("R_InitTextures: got TEXTURE2");
+                numtextures2 = ReadS32Unaligned(mtex2);
+                // NUMWORKS_RDATA_CHECKPOINT("R_InitTextures: read TEXTURE2 count");
     }
 
     _g->numtextures = numtextures1 + numtextures2;
@@ -335,6 +409,8 @@ static void R_InitTextures()
 
     for (int i=0 ; i<_g->numtextures ; i++)
         texturetranslation[i] = i;
+
+    // NUMWORKS_RDATA_CHECKPOINT("R_InitTextures: done");
 }
 
 //
@@ -390,14 +466,23 @@ void R_InitColormaps (void)
 
 void R_InitData(void)
 {
+    // NUMWORKS_RDATA_CHECKPOINT("R_InitData: before Textures");
   lprintf(LO_INFO, "Textures");
   R_InitTextures();
+
+    // NUMWORKS_RDATA_CHECKPOINT("R_InitData: after Textures");
   lprintf(LO_INFO, "Flats");
   R_InitFlats();
+
+    // NUMWORKS_RDATA_CHECKPOINT("R_InitData: after Flats");
   lprintf(LO_INFO, "Sprites");
   R_InitSpriteLumps();
+
+    // NUMWORKS_RDATA_CHECKPOINT("R_InitData: after Sprites");
   lprintf(LO_INFO, "Colormaps");
   R_InitColormaps();                    // killough 3/20/98
+
+    // NUMWORKS_RDATA_CHECKPOINT("R_InitData: after Colormaps");
 }
 
 //
