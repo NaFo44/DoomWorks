@@ -37,7 +37,9 @@
 #include "config.h"
 #include "doomtype.h"
 
+#if !defined(GBADOOM_DISABLE_RECIP_TABLE) || (GBADOOM_DISABLE_RECIP_TABLE == 0)
 #include "m_recip.h"
+#endif
 
 /*
  * Fixed point, 32bit as 16.16.
@@ -138,7 +140,18 @@ inline static CONSTFUNC fixed_t FixedReciprocal(fixed_t v)
         shift++;
     }
 
+#if defined(GBADOOM_DISABLE_RECIP_TABLE) && (GBADOOM_DISABLE_RECIP_TABLE == 1)
+    if (val == 0)
+    {
+        return 0;
+    }
+
+    /* Rounded reciprocal in 16.16 fixed-point, matching the table semantics. */
+    fixed_t result = (fixed_t)(((((int_64_t)1) << 32) + (val >> 1)) / val);
+    result >>= shift;
+#else
     fixed_t result = (reciprocalTable[val] >> shift);
+#endif
 
     return v < 0 ? -result : result;
 }

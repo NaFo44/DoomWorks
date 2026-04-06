@@ -58,6 +58,12 @@
 
 #include "global_data.h"
 
+#if defined(GBADOOM_VERBOSE_IWAD_LOGS) && GBADOOM_VERBOSE_IWAD_LOGS
+#define IWAD_LOG(...) lprintf(LO_ALWAYS, __VA_ARGS__)
+#else
+#define IWAD_LOG(...) ((void)0)
+#endif
+
 //
 // GLOBALS
 //
@@ -111,13 +117,36 @@ static void W_AddFile()
     const unsigned char* iwad = doom_iwad_data();
     const unsigned int iwad_len = doom_iwad_size();
 
-    if(iwad_len > 0)
+    if(iwad_len == 0)
     {
-        header = (wadinfo_t*)&iwad[0];
-
-        if (strncmp(header->identification,"IWAD",4))
-            I_Error("W_AddFile: Wad file doesn't have IWAD id");
+        IWAD_LOG("[IWAD] No IWAD data available");
+        return;
     }
+
+    if (iwad_len < sizeof(wadinfo_t))
+        I_Error("W_AddFile: IWAD header truncated (%u bytes)", iwad_len);
+
+    header = (const wadinfo_t*)&iwad[0];
+
+    if (strncmp(header->identification,"IWAD",4))
+        I_Error("W_AddFile: Wad file doesn't have IWAD id");
+
+    if (header->numlumps < 0 || header->infotableofs < 0)
+        I_Error("W_AddFile: IWAD has negative directory fields");
+
+    {
+        const unsigned int dir_ofs = (unsigned int)header->infotableofs;
+        const unsigned int num_lumps = (unsigned int)header->numlumps;
+
+        if (dir_ofs > iwad_len)
+            I_Error("W_AddFile: IWAD directory is out of bounds");
+
+        if (num_lumps > (iwad_len - dir_ofs) / (unsigned int)sizeof(filelump_t))
+            I_Error("W_AddFile: IWAD directory is out of bounds");
+    }
+
+    IWAD_LOG("[IWAD] Header ok: size=%u lumps=%d dir_ofs=%d",
+             iwad_len, header->numlumps, header->infotableofs);
 }
 
 //Return -1 if not found.
