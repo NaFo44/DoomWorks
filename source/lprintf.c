@@ -52,6 +52,10 @@
  */
 #define MAX_MESSAGE_SIZE 128
 
+#if PLATFORM_DEVICE
+    int printf(const char *__restrict, ...)  {  return 0; }
+    int lprintf(OutputLevels pri, const char *s, ...) {  return 0; }
+#else
 int lprintf(OutputLevels pri, const char *s, ...)
 {
 	char msg[MAX_MESSAGE_SIZE];
@@ -69,3 +73,4 @@ int lprintf(OutputLevels pri, const char *s, ...)
 
     return 0;
 }
+#endif
