@@ -750,6 +750,46 @@ boolean P_IsDoomnumAllowed(int doomnum)
   return true;
 }
 
+boolean P_WillSpawnMapThing(const mapthing_t* mthing)
+{
+    int options;
+    int i;
+
+    if (mthing == NULL)
+        return false;
+
+    switch (mthing->type)
+    {
+        case 0:
+        case DEN_PLAYER5:
+        case DEN_PLAYER6:
+        case DEN_PLAYER7:
+        case DEN_PLAYER8:
+            return false;
+    }
+
+    options = mthing->options;
+
+    if (options & MTF_RESERVED)
+        options &= MTF_EASY | MTF_NORMAL | MTF_HARD | MTF_AMBUSH | MTF_NOTSINGLE;
+
+    // Player 1 start always spawns.
+    if (mthing->type == 1)
+        return true;
+
+    if (options & MTF_NOTSINGLE)
+        return false;
+
+    if (_g->gameskill == sk_baby || _g->gameskill == sk_easy ?
+            !(options & MTF_EASY) :
+            _g->gameskill == sk_hard || _g->gameskill == sk_nightmare ?
+            !(options & MTF_HARD) : !(options & MTF_NORMAL))
+        return false;
+
+    i = P_FindDoomedNum(mthing->type);
+    return i != NUMMOBJTYPES;
+}
+
 //
 // P_SpawnMapThing
 // The fields of the mapthing should
