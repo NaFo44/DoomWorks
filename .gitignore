@@ -3,3 +3,5 @@ source/iwad
 *.wad
 *.wad.bak
 epsilon.bin
+wadptr
+*.WAD

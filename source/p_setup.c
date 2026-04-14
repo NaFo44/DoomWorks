@@ -291,7 +291,14 @@ static void P_LoadSideDefs (int lump)
         compact_bad++;
     }
 
+#if defined(NUMWORKS)
+    if (compact_bad == vanilla_bad)
+      is_vanilla = false;
+    else
+      is_vanilla = (vanilla_bad < compact_bad);
+#else
     is_vanilla = (vanilla_bad <= compact_bad);
+#endif
 
     lprintf(LO_WARN,
         "P_LoadSideDefs: ambiguous sidedef lump (%d bytes), chose %s (vanilla bad=%d compact bad=%d)\n",
