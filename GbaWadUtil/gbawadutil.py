@@ -33,6 +33,9 @@ HUFF_LUMP_MAGIC = b"HUF0"
 HUFF_COMPRESSIBLE_MAP_LUMP_OFFSETS = (ML_THINGS, ML_SIDEDEFS, ML_SECTORS)
 HUFF_MIN_SAVINGS = 8
 HUFF_MAX_CODE_LEN = 24
+SPRITE_START_MARKERS = {"S_START", "SS_START", "S1_START", "S2_START"}
+SPRITE_END_MARKERS = {"S_END", "SS_END", "S1_END", "S2_END"}
+DEMO_LUMP_NAMES = {"DEMO1", "DEMO2", "DEMO3", "DEMO4"}
 
 
 def align4(value):
@@ -190,6 +193,114 @@ def huffman_compress_block(data):
     return header + table + payload
 
 
+def parse_patch_lump(data):
+    if len(data) < 8:
+        return None
+
+    width, height, leftoffset, topoffset = struct.unpack_from("<hhhh", data, 0)
+    if width <= 0 or width > 2048 or height <= 0 or height > 2048:
+        return None
+
+    table_ofs = 8
+    table_size = width * 4
+    if table_ofs + table_size > len(data):
+        return None
+
+    col_offsets = struct.unpack_from("<" + ("I" * width), data, table_ofs)
+    columns = []
+
+    for col_ofs in col_offsets:
+        if col_ofs < table_ofs + table_size or col_ofs >= len(data):
+            return None
+
+        pos = col_ofs
+        post_count = 0
+
+        while True:
+            if pos >= len(data):
+                return None
+
+            topdelta = data[pos]
+            pos += 1
+
+            if topdelta == 0xFF:
+                break
+
+            if pos + 2 > len(data):
+                return None
+
+            length = data[pos]
+            pos += 2  # length + unused byte
+
+            if pos + length + 1 > len(data):
+                return None
+
+            pos += length + 1  # pixel payload + trailing unused byte
+            post_count += 1
+
+            if post_count > 65535:
+                return None
+
+        columns.append(data[col_ofs:pos])
+
+    return width, height, leftoffset, topoffset, columns
+
+
+def rebuild_patch_lump(width, height, leftoffset, topoffset, columns):
+    if len(columns) != width:
+        return None
+
+    out = bytearray(8 + (width * 4))
+    struct.pack_into("<hhhh", out, 0, width, height, leftoffset, topoffset)
+
+    column_cache = {}
+
+    for col_index, column_bytes in enumerate(columns):
+        shared_ofs = column_cache.get(column_bytes)
+        if shared_ofs is None:
+            shared_ofs = len(out)
+            out.extend(column_bytes)
+            column_cache[column_bytes] = shared_ofs
+
+        struct.pack_into("<I", out, 8 + (col_index * 4), shared_ofs)
+
+    return bytes(out)
+
+
+def is_sprite_lump_name(name):
+    if len(name) not in (6, 8):
+        return False
+
+    if not name[:4].isalnum():
+        return False
+    if not name[4].isalpha() or not name[5].isdigit():
+        return False
+
+    if len(name) == 8 and (not name[6].isalpha() or not name[7].isdigit()):
+        return False
+
+    return True
+
+
+def parse_sprite_parts(name):
+    if not is_sprite_lump_name(name):
+        return None
+
+    frames = [name[4]]
+    rotations = [ord(name[5]) - ord("0")]
+
+    if len(name) == 8:
+        frames.append(name[6])
+        rotations.append(ord(name[7]) - ord("0"))
+
+    return tuple(frames), tuple(rotations)
+
+
+def sprite_rotation_distance(a, b):
+    diff = abs(a - b)
+    return min(diff, 8 - diff)
+
+
 def decode_lump_name(raw):
     return raw.split(b"\x00", 1)[0].decode("latin-1", errors="ignore")
 
@@ -261,14 +372,18 @@ class WadFile:
             out.append(0)
 
         dir_entries = []
+        shared_data_ofs = {}
 
         for lump in self.lumps:
             size = lump.length
             if size > 0:
-                while len(out) % 4:
-                    out.append(0)
-                file_pos = len(out)
-                out.extend(lump.data)
+                file_pos = shared_data_ofs.get(lump.data)
+                if file_pos is None:
+                    while len(out) % 4:
+                        out.append(0)
+                    file_pos = len(out)
+                    out.extend(lump.data)
+                    shared_data_ofs[lump.data] = file_pos
             else:
                 file_pos = 0
             dir_entries.append((file_pos, size, encode_lump_name(lump.name)))
@@ -341,12 +456,32 @@ class WadProcessor:
         "SFXEND",
     }
 
+    GRAPHICS_MARKER_NAMES = (
+        "S_START",
+        "S_END",
+        "SS_START",
+        "SS_END",
+        "S1_START",
+        "S1_END",
+        "S2_START",
+        "S2_END",
+        "P_START",
+        "P_END",
+        "PP_START",
+        "PP_END",
+        "P1_START",
+        "P1_END",
+        "P2_START",
+        "P2_END",
+    )
+
     def __init__(self, wad_file):
         self.wad_file = wad_file
         self.texture_map = None
 
     def process_wad(self):
         self.remove_unused_lumps()
+        self.optimize_graphics_lumps()
 
         map_lump_num, _ = self.wad_file.get_lump_by_name("MAP01")
         if map_lump_num != -1:
@@ -374,6 +509,170 @@ class WadProcessor:
                 if lump_num != -1:
                     self.process_level(lump_num)
         return True
+
+    def collect_ranges(self, start_markers, end_markers):
+        ranges = []
+        range_start = None
+
+        for idx, lump in enumerate(self.wad_file.lumps):
+            name_upper = lump.name.upper()
+
+            if name_upper in start_markers:
+                range_start = idx + 1
+                continue
+
+            if name_upper in end_markers and range_start is not None:
+                if range_start < idx:
+                    ranges.append((range_start, idx))
+                range_start = None
+
+        if range_start is not None and range_start < len(self.wad_file.lumps):
+            ranges.append((range_start, len(self.wad_file.lumps)))
+
+        return ranges
+
+    def collect_indices_from_ranges(self, ranges):
+        indices = set()
+        for start, end in ranges:
+            for idx in range(start, end):
+                indices.add(idx)
+        return indices
+
+    def build_texture_patch_name_set(self):
+        names = set()
+        lump_num, pnames_lump = self.wad_file.get_lump_by_name("PNAMES")
+
+        if lump_num == -1 or pnames_lump is None or pnames_lump.length < 4:
+            return names
+
+        (count,) = struct.unpack_from("<I", pnames_lump.data, 0)
+        if count <= 0:
+            return names
+
+        max_entries = (pnames_lump.length - 4) // 8
+        if count > max_entries:
+            count = max_entries
+
+        for i in range(count):
+            start = 4 + (i * 8)
+            raw_name = pnames_lump.data[start:start + 8]
+            name = decode_lump_name(raw_name).upper()
+            if name:
+                names.add(name)
+
+        return names
+
+    def collapse_sprite_diagonals(self, sprite_indices):
+        if not sprite_indices:
+            return 0
+
+        sprite_entries = []
+        original_data = {}
+
+        for idx in sorted(sprite_indices):
+            lump = self.wad_file.get_lump_by_num(idx)
+            if lump is None:
+                continue
+            name_upper = lump.name.upper()
+            parsed = parse_sprite_parts(name_upper)
+            if parsed is None:
+                continue
+            frames, rotations = parsed
+            sprite_entries.append((idx, name_upper, frames, rotations))
+            original_data[idx] = lump.data
+
+        replaced = 0
+
+        for target_idx, target_name, target_frames, target_rotations in sprite_entries:
+            if not any(rot in (2, 4, 6, 8) for rot in target_rotations):
+                continue
+
+            best = None
+            best_score = None
+
+            for source_idx, source_name, source_frames, source_rotations in sprite_entries:
+                if source_idx == target_idx:
+                    continue
+                if source_name[:4] != target_name[:4]:
+                    continue
+                if source_frames != target_frames:
+                    continue
+                if len(source_rotations) != len(target_rotations):
+                    continue
+                if any(rot in (2, 4, 6, 8) for rot in source_rotations):
+                    continue
+
+                score = 0
+                valid = True
+                for tr, sr in zip(target_rotations, source_rotations):
+                    if tr == 0 or sr == 0:
+                        valid = False
+                        break
+                    score += sprite_rotation_distance(tr, sr)
+
+                if not valid:
+                    continue
+
+                if best_score is None or score < best_score:
+                    best_score = score
+                    best = source_idx
+
+            if best is None:
+                continue
+
+            source_data = original_data.get(best)
+            lump = self.wad_file.get_lump_by_num(target_idx)
+            if source_data is None or lump is None:
+                continue
+
+            if lump.data != source_data and self.wad_file.replace_lump(target_idx, Lump(lump.name, source_data)):
+                replaced += 1
+
+        return replaced
+
+    def compress_graphics_lumps(self, sprite_indices, texture_patch_names):
+        rewritten = 0
+        saved_bytes = 0
+
+        for idx, lump in enumerate(self.wad_file.lumps):
+            name_upper = lump.name.upper()
+            if name_upper in self.GRAPHICS_MARKER_NAMES:
+                continue
+
+            patch_info = parse_patch_lump(lump.data)
+            if patch_info is None:
+                continue
+
+            width, height, leftoffset, topoffset, columns = patch_info
+            is_sprite = idx in sprite_indices
+            is_texture_patch = name_upper in texture_patch_names
+            is_vpatch = (not is_sprite) and (not is_texture_patch)
+
+            if is_vpatch and width > 1:
+                for col_idx in range(1, width, 2):
+                    columns[col_idx] = columns[col_idx - 1]
+
+            rebuilt = rebuild_patch_lump(width, height, leftoffset, topoffset, columns)
+            if rebuilt is None:
+                continue
+
+            if len(rebuilt) >= len(lump.data):
+                continue
+
+            if self.wad_file.replace_lump(idx, Lump(lump.name, rebuilt)):
+                rewritten += 1
+                saved_bytes += len(lump.data) - len(rebuilt)
+
+        return rewritten, saved_bytes
+
+    def optimize_graphics_lumps(self):
+        sprite_ranges = self.collect_ranges(SPRITE_START_MARKERS, SPRITE_END_MARKERS)
+        sprite_indices = self.collect_indices_from_ranges(sprite_ranges)
+
+        self.collapse_sprite_diagonals(sprite_indices)
+
+        texture_patch_names = self.build_texture_patch_name_set()
+        self.compress_graphics_lumps(sprite_indices, texture_patch_names)
 
     def process_level(self, lump_num):
         self.process_vertexes(lump_num)
@@ -712,6 +1011,9 @@ class WadProcessor:
             if name_upper in self.AUDIO_END_MARKERS:
                 in_audio_block = False
                 continue
+
+            # if name_upper in DEMO_LUMP_NAMES:
+            #     continue
 
             if in_audio_block or self.is_audio_lump(lump):
                 continue
