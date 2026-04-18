@@ -29,6 +29,8 @@ void I_ProcessKeyEvents();
 void I_DebugCheckpoint_e32(const char* checkpoint);
 void I_DebugLog_e32(const char* message);
 void I_DebugPause_e32(const char* reason);
+int I_IsTexturedPlanesEnabled_e32(void);
+int I_IsVisualExtrasEnabled_e32(void);
 
 int I_GetTime_e32(void);
 

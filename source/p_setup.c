@@ -59,6 +59,9 @@ int R_LoadTextureByName(const char* tex_name);
 #define GBADOOM_HUFF_HEADER_SIZE 16u
 #define GBADOOM_HUFF_MAX_SYMBOLS 256
 #define GBADOOM_HUFF_MAX_NODES (GBADOOM_HUFF_MAX_SYMBOLS * 2)
+#define GBADOOM_NODE_COMPACT_MAGIC 0x3043444Eu /* "NDC0" */
+#define GBADOOM_NODE_COMPACT_HEADER_SIZE 16u
+#define GBADOOM_NODE_COMPACT_ENTRY_SIZE 16u
 
 typedef struct
 {
@@ -71,6 +74,27 @@ typedef struct
     short symbol[GBADOOM_HUFF_MAX_NODES];
     int node_count;
 } huff_lump_reader_t;
+
+typedef struct
+{
+    short floorheight;
+    short ceilingheight;
+    short floorpic;
+    short ceilingpic;
+    unsigned char lightlevel;
+    short special;
+    short tag;
+} PACKEDATTR mapcompactsector_t;
+
+typedef struct
+{
+  short x;
+  short y;
+  short dx;
+  short dy;
+  unsigned short children[2];
+  unsigned char bbox_q[4];
+} PACKEDATTR mapcompactnode_t;
 
 static unsigned int P_ReadU32LE(const byte* p)
 {
@@ -347,21 +371,53 @@ static void P_LoadSegs (int lump)
 static void P_LoadSubsectors (int lump)
 {
   /* cph 2006/07/29 - make data a const mapsubsector_t *, so the loop below is simpler & gives no constness warnings */
-  const mapsubsector_t *data;
+  const mapsubsector_t *data = NULL;
+  int lump_size;
+  boolean is_huffman = false;
+  huff_lump_reader_t huff;
   int  i;
 
-  _g->numsubsectors = W_LumpLength (lump) / sizeof(mapsubsector_t);
-  _g->subsectors = Z_Calloc(_g->numsubsectors,sizeof(subsector_t),PU_LEVEL,0);
-  data = (const mapsubsector_t *)W_CacheLumpNum(lump);
+  if (P_HuffInitLumpReader(lump, &huff))
+  {
+    is_huffman = true;
+    lump_size = (int)huff.raw_size;
+  }
+  else
+  {
+    lump_size = W_LumpLength(lump);
+    data = (const mapsubsector_t *)W_CacheLumpNum(lump);
+  }
 
-  if ((!data) || (!_g->numsubsectors))
+  if (lump_size % (int)sizeof(mapsubsector_t) != 0)
+    I_Error("P_LoadSubsectors: invalid lump size %d", lump_size);
+
+  _g->numsubsectors = lump_size / (int)sizeof(mapsubsector_t);
+  _g->subsectors = Z_Calloc(_g->numsubsectors,sizeof(subsector_t),PU_LEVEL,0);
+
+  if (((!is_huffman) && (!data)) || (!_g->numsubsectors))
     I_Error("P_LoadSubsectors: no subsectors in level");
 
   for (i=0; i<_g->numsubsectors; i++)
   {
-    _g->subsectors[i].numlines  = (unsigned short)SHORT(data[i].numsegs );
-    _g->subsectors[i].firstline = (unsigned short)SHORT(data[i].firstseg);
+    mapsubsector_t decoded_subsector;
+    const mapsubsector_t* map_subsector;
+
+    if (is_huffman)
+    {
+      P_HuffReadBytesOrError(&huff, &decoded_subsector, sizeof(decoded_subsector), "P_LoadSubsectors", lump);
+      map_subsector = &decoded_subsector;
+    }
+    else
+    {
+      map_subsector = data + i;
+    }
+
+    _g->subsectors[i].numlines  = (unsigned short)SHORT(map_subsector->numsegs );
+    _g->subsectors[i].firstline = (unsigned short)SHORT(map_subsector->firstseg);
   }
+
+  if (is_huffman)
+    P_HuffFinishOrError(&huff, "P_LoadSubsectors", lump);
 }
 
 //
@@ -375,6 +431,9 @@ static void P_LoadSectors (int lump)
   int lump_size;
   int  i;
   boolean is_huffman = false;
+  boolean can_be_vanilla;
+  boolean can_be_compact;
+  boolean is_compact = false;
   huff_lump_reader_t huff;
 
   if (P_HuffInitLumpReader(lump, &huff))
@@ -387,40 +446,170 @@ static void P_LoadSectors (int lump)
     data = W_CacheLumpNum(lump);
     lump_size = W_LumpLength(lump);
   }
-  if (lump_size % (int)sizeof(mapsector_t) != 0)
+
+  can_be_vanilla = (lump_size % (int)sizeof(mapsector_t) == 0);
+  can_be_compact = (lump_size % (int)sizeof(mapcompactsector_t) == 0);
+
+  if (!can_be_vanilla && !can_be_compact)
     I_Error("P_LoadSectors: invalid lump size %d", lump_size);
 
-  _g->numsectors = lump_size / (int)sizeof(mapsector_t);
+  if (can_be_compact && !can_be_vanilla)
+  {
+    is_compact = true;
+  }
+  else if (can_be_vanilla && !can_be_compact)
+  {
+    is_compact = false;
+  }
+  else
+  {
+    int vanilla_count = lump_size / (int)sizeof(mapsector_t);
+    int compact_count = lump_size / (int)sizeof(mapcompactsector_t);
+    int vanilla_bad = 0;
+    int compact_bad = 0;
+
+    if (is_huffman)
+    {
+      P_HuffResetReader(&huff);
+      for (i = 0; i < vanilla_count; i++)
+      {
+        mapsector_t ms;
+        int floor_lump;
+        int ceiling_lump;
+        P_HuffReadBytesOrError(&huff, &ms, sizeof(ms), "P_LoadSectors", lump);
+        floor_lump = W_CheckNumForName(ms.floorpic);
+        ceiling_lump = W_CheckNumForName(ms.ceilingpic);
+        if (floor_lump < _g->firstflat || floor_lump >= _g->firstflat + _g->numflats)
+          vanilla_bad++;
+        if (ceiling_lump < _g->firstflat || ceiling_lump >= _g->firstflat + _g->numflats)
+          vanilla_bad++;
+      }
+      P_HuffFinishOrError(&huff, "P_LoadSectors", lump);
+
+      P_HuffResetReader(&huff);
+      for (i = 0; i < compact_count; i++)
+      {
+        mapcompactsector_t ms;
+        int floor_num;
+        int ceiling_num;
+        P_HuffReadBytesOrError(&huff, &ms, sizeof(ms), "P_LoadSectors", lump);
+        floor_num = SHORT(ms.floorpic);
+        ceiling_num = SHORT(ms.ceilingpic);
+        if ((unsigned int)floor_num >= (unsigned int)_g->numflats)
+          compact_bad++;
+        if ((unsigned int)ceiling_num >= (unsigned int)_g->numflats)
+          compact_bad++;
+      }
+      P_HuffFinishOrError(&huff, "P_LoadSectors", lump);
+    }
+    else
+    {
+      for (i = 0; i < vanilla_count; i++)
+      {
+        const mapsector_t *ms = (const mapsector_t *)data + i;
+        int floor_lump = W_CheckNumForName(ms->floorpic);
+        int ceiling_lump = W_CheckNumForName(ms->ceilingpic);
+        if (floor_lump < _g->firstflat || floor_lump >= _g->firstflat + _g->numflats)
+          vanilla_bad++;
+        if (ceiling_lump < _g->firstflat || ceiling_lump >= _g->firstflat + _g->numflats)
+          vanilla_bad++;
+      }
+
+      for (i = 0; i < compact_count; i++)
+      {
+        const mapcompactsector_t *ms = (const mapcompactsector_t *)data + i;
+        int floor_num = SHORT(ms->floorpic);
+        int ceiling_num = SHORT(ms->ceilingpic);
+        if ((unsigned int)floor_num >= (unsigned int)_g->numflats)
+          compact_bad++;
+        if ((unsigned int)ceiling_num >= (unsigned int)_g->numflats)
+          compact_bad++;
+      }
+    }
+
+    is_compact = (compact_bad < vanilla_bad);
+    lprintf(LO_WARN,
+        "P_LoadSectors: ambiguous sector lump (%d bytes), chose %s (vanilla bad=%d compact bad=%d)\n",
+        lump_size,
+        is_compact ? "COMPACT" : "VANILLA",
+        vanilla_bad,
+        compact_bad);
+  }
+
+  if (is_compact)
+    _g->numsectors = lump_size / (int)sizeof(mapcompactsector_t);
+  else
+    _g->numsectors = lump_size / (int)sizeof(mapsector_t);
+
   _g->sectors = Z_Calloc (_g->numsectors,sizeof(sector_t),PU_LEVEL,0);
 
   if (((!is_huffman) && (!data)) || (!_g->numsectors))
     I_Error("P_LoadSectors: no sectors in level");
 
+  if (is_huffman)
+    P_HuffResetReader(&huff);
+
   for (i=0; i<_g->numsectors; i++)
     {
       sector_t *ss = _g->sectors + i;
-      mapsector_t decoded_sector;
-      const mapsector_t *ms;
+      int floorpic;
+      int ceilingpic;
 
-      if (is_huffman)
+      if (is_compact)
       {
-        P_HuffReadBytesOrError(&huff, &decoded_sector, sizeof(decoded_sector), "P_LoadSectors", lump);
-        ms = &decoded_sector;
+        mapcompactsector_t decoded_sector;
+        const mapcompactsector_t *ms;
+
+        if (is_huffman)
+        {
+          P_HuffReadBytesOrError(&huff, &decoded_sector, sizeof(decoded_sector), "P_LoadSectors", lump);
+          ms = &decoded_sector;
+        }
+        else
+        {
+          ms = (const mapcompactsector_t *) data + i;
+        }
+
+        floorpic = SHORT(ms->floorpic);
+        ceilingpic = SHORT(ms->ceilingpic);
+        if ((unsigned int)floorpic >= (unsigned int)_g->numflats)
+          floorpic = 0;
+        if ((unsigned int)ceilingpic >= (unsigned int)_g->numflats)
+          ceilingpic = 0;
+
+        ss->floorheight = SHORT(ms->floorheight)<<FRACBITS;
+        ss->ceilingheight = SHORT(ms->ceilingheight)<<FRACBITS;
+        ss->floorpic = floorpic;
+        ss->ceilingpic = ceilingpic;
+        ss->lightlevel = (short)ms->lightlevel;
+        ss->special = SHORT(ms->special);
+        ss->oldspecial = SHORT(ms->special);
+        ss->tag = SHORT(ms->tag);
       }
       else
       {
-        ms = (const mapsector_t *) data + i;
+        mapsector_t decoded_sector;
+        const mapsector_t *ms;
+
+        if (is_huffman)
+        {
+          P_HuffReadBytesOrError(&huff, &decoded_sector, sizeof(decoded_sector), "P_LoadSectors", lump);
+          ms = &decoded_sector;
+        }
+        else
+        {
+          ms = (const mapsector_t *) data + i;
+        }
+
+        ss->floorheight = SHORT(ms->floorheight)<<FRACBITS;
+        ss->ceilingheight = SHORT(ms->ceilingheight)<<FRACBITS;
+        ss->floorpic = R_FlatNumForName(ms->floorpic);
+        ss->ceilingpic = R_FlatNumForName(ms->ceilingpic);
+        ss->lightlevel = SHORT(ms->lightlevel);
+        ss->special = SHORT(ms->special);
+        ss->oldspecial = SHORT(ms->special);
+        ss->tag = SHORT(ms->tag);
       }
-
-      ss->floorheight = SHORT(ms->floorheight)<<FRACBITS;
-      ss->ceilingheight = SHORT(ms->ceilingheight)<<FRACBITS;
-      ss->floorpic = R_FlatNumForName(ms->floorpic);
-      ss->ceilingpic = R_FlatNumForName(ms->ceilingpic);
-
-      ss->lightlevel = SHORT(ms->lightlevel);
-      ss->special = SHORT(ms->special);
-      ss->oldspecial = SHORT(ms->special);
-      ss->tag = SHORT(ms->tag);
 
       ss->thinglist = NULL;
       ss->touching_thinglist = NULL;            // phares 3/14/98
@@ -438,10 +627,43 @@ static void P_LoadSectors (int lump)
 
 static void P_LoadNodes (int lump)
 {
-  numnodes = W_LumpLength (lump) / sizeof(mapnode_t);
-  nodes = W_CacheLumpNum (lump); // cph - wad lump handling updated
+  const byte *data = W_CacheLumpNum(lump);
+  int lump_size = W_LumpLength(lump);
 
-  if ((!nodes) || (!numnodes))
+  nodes = NULL;
+  nodes_are_compact = false;
+  nodes_compact = NULL;
+  memset(nodes_root_bbox, 0, sizeof(nodes_root_bbox));
+
+  if (data != NULL && lump_size >= (int)GBADOOM_NODE_COMPACT_HEADER_SIZE
+      && P_ReadU32LE(data) == GBADOOM_NODE_COMPACT_MAGIC)
+  {
+    unsigned int compact_count = (unsigned int)data[4] | ((unsigned int)data[5] << 8);
+    unsigned int expected_size = GBADOOM_NODE_COMPACT_HEADER_SIZE
+        + compact_count * GBADOOM_NODE_COMPACT_ENTRY_SIZE;
+
+    if ((unsigned int)lump_size == expected_size)
+    {
+      numnodes = (int)compact_count;
+      nodes_are_compact = true;
+      nodes_compact = data + GBADOOM_NODE_COMPACT_HEADER_SIZE;
+      nodes_root_bbox[BOXTOP] = (short)((unsigned short)data[6] | ((unsigned short)data[7] << 8));
+      nodes_root_bbox[BOXBOTTOM] = (short)((unsigned short)data[8] | ((unsigned short)data[9] << 8));
+      nodes_root_bbox[BOXLEFT] = (short)((unsigned short)data[10] | ((unsigned short)data[11] << 8));
+      nodes_root_bbox[BOXRIGHT] = (short)((unsigned short)data[12] | ((unsigned short)data[13] << 8));
+    }
+    else
+    {
+      I_Error("P_LoadNodes: malformed compact nodes lump size %d", lump_size);
+    }
+  }
+  else
+  {
+    numnodes = lump_size / (int)sizeof(mapnode_t);
+    nodes = (const mapnode_t *)data; // cph - wad lump handling updated
+  }
+
+  if (((!nodes_are_compact) && (!nodes)) || (!numnodes))
   {
     // allow trivial maps
     if (_g->numsubsectors == 1)
@@ -902,7 +1124,7 @@ static void P_LoadBlockMap (int lump)
     }
 
     _g->blockmap_has_leading_zero =
-        (valid_blocks > 0) && (leading_zero_blocks * 2 >= valid_blocks);
+        (valid_blocks > 0) && (leading_zero_blocks * 10 >= valid_blocks * 9);
 
     lprintf(LO_INFO,
         "P_LoadBlockMap: leading_zero=%s (%d/%d blocks)\n",
@@ -924,8 +1146,20 @@ static void P_LoadBlockMap (int lump)
 
 static void P_LoadReject(int lumpnum)
 {
+  huff_lump_reader_t huff;
   _g->rejectlump = lumpnum + ML_REJECT;
-  _g->rejectmatrix = W_CacheLumpNum(_g->rejectlump);
+
+  if (P_HuffInitLumpReader(_g->rejectlump, &huff))
+  {
+    byte* decoded = Z_Malloc((int)huff.raw_size, PU_LEVEL, 0);
+    P_HuffReadBytesOrError(&huff, decoded, huff.raw_size, "P_LoadReject", _g->rejectlump);
+    P_HuffFinishOrError(&huff, "P_LoadReject", _g->rejectlump);
+    _g->rejectmatrix = decoded;
+  }
+  else
+  {
+    _g->rejectmatrix = W_CacheLumpNum(_g->rejectlump);
+  }
 }
 
 //

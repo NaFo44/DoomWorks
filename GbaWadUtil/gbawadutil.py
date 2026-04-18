@@ -30,11 +30,25 @@ ST_POSITIVE = 2
 ST_NEGATIVE = 3
 
 HUFF_LUMP_MAGIC = b"HUF0"
-HUFF_COMPRESSIBLE_MAP_LUMP_OFFSETS = (ML_THINGS, ML_SIDEDEFS, ML_SECTORS)
-HUFF_MIN_SAVINGS = 8
+HUFF_COMPRESSIBLE_MAP_LUMP_OFFSETS = (
+    ML_THINGS,
+    ML_SIDEDEFS,
+    ML_SSECTORS,
+    ML_SECTORS,
+    ML_REJECT,
+)
+HUFF_MIN_SAVINGS = 1
 HUFF_MAX_CODE_LEN = 24
+FLAT_LUMP_SIZE = 64 * 64
+LOSSY_PATCH_COLUMN_GROUP = 7
+LOSSY_FLAT_BLOCK_SIZE = 2
+NODE_COMPACT_MAGIC = b"NDC0"
+NODE_COMPACT_HEADER_SIZE = 16
+NODE_COMPACT_ENTRY_SIZE = 16
 SPRITE_START_MARKERS = {"S_START", "SS_START", "S1_START", "S2_START"}
 SPRITE_END_MARKERS = {"S_END", "SS_END", "S1_END", "S2_END"}
+FLAT_START_MARKERS = {"F_START", "FF_START", "F1_START", "F2_START"}
+FLAT_END_MARKERS = {"F_END", "FF_END", "F1_END", "F2_END"}
 DEMO_LUMP_NAMES = {"DEMO1", "DEMO2", "DEMO3", "DEMO4"}
 
 
@@ -301,6 +315,34 @@ def sprite_rotation_distance(a, b):
     return min(diff, 8 - diff)
 
 
+def is_ui_font_lump_name(name):
+    return (
+        name.startswith("STCFN")
+        or name.startswith("STTNUM")
+        or name.startswith("STYSNUM")
+        or name.startswith("WINUM")
+        or name.startswith("AMMNUM")
+        or name.startswith("CWILV")
+        or name.startswith("WILV")
+        or name.startswith("STGNUM")
+        or name.startswith("STTPRCNT")
+        or name.startswith("STKEYS")
+        or name.startswith("STARMS")
+        or name.startswith("STBAR")
+        or name.startswith("STDISK")
+        or name.startswith("STCDROM")
+        or name.startswith("STFB")
+        or name.startswith("STPB")
+        or name.startswith("STF")
+        or name.startswith("STTMINUS")
+        or name.startswith("FONTA")
+        or name.startswith("FONTB")
+        or name.startswith("M_")
+        or name.startswith("WI")
+        or name in ("TITLEPIC", "CREDIT", "HELP", "INTERPIC")
+    )
+
+
 def decode_lump_name(raw):
     return raw.split(b"\x00", 1)[0].decode("latin-1", errors="ignore")
 
@@ -478,10 +520,12 @@ class WadProcessor:
     def __init__(self, wad_file):
         self.wad_file = wad_file
         self.texture_map = None
+        self.flat_map = None
 
     def process_wad(self):
         self.remove_unused_lumps()
         self.optimize_graphics_lumps()
+        self.compress_flat_lumps()
 
         map_lump_num, _ = self.wad_file.get_lump_by_name("MAP01")
         if map_lump_num != -1:
@@ -639,18 +683,27 @@ class WadProcessor:
             if name_upper in self.GRAPHICS_MARKER_NAMES:
                 continue
 
+            is_sprite = idx in sprite_indices
+
+            if not is_sprite and name_upper not in texture_patch_names:
+                continue
+
             patch_info = parse_patch_lump(lump.data)
             if patch_info is None:
                 continue
 
             width, height, leftoffset, topoffset, columns = patch_info
-            is_sprite = idx in sprite_indices
-            is_texture_patch = name_upper in texture_patch_names
-            is_vpatch = (not is_sprite) and (not is_texture_patch)
+            is_ui_font = is_ui_font_lump_name(name_upper)
 
-            if is_vpatch and width > 1:
-                for col_idx in range(1, width, 2):
-                    columns[col_idx] = columns[col_idx - 1]
+            if is_ui_font:
+                continue
+
+            if width > 1:
+                for col_idx in range(1, width):
+                    src_col = (col_idx // LOSSY_PATCH_COLUMN_GROUP) * LOSSY_PATCH_COLUMN_GROUP
+                    if src_col >= width:
+                        src_col = width - 1
+                    columns[col_idx] = columns[src_col]
 
             rebuilt = rebuild_patch_lump(width, height, leftoffset, topoffset, columns)
             if rebuilt is None:
@@ -668,17 +721,70 @@ class WadProcessor:
     def optimize_graphics_lumps(self):
         sprite_ranges = self.collect_ranges(SPRITE_START_MARKERS, SPRITE_END_MARKERS)
         sprite_indices = self.collect_indices_from_ranges(sprite_ranges)
+        texture_patch_names = self.build_texture_patch_name_set()
 
         self.collapse_sprite_diagonals(sprite_indices)
-
-        texture_patch_names = self.build_texture_patch_name_set()
         self.compress_graphics_lumps(sprite_indices, texture_patch_names)
+
+    def lossify_flat_lump(self, data):
+        if LOSSY_FLAT_BLOCK_SIZE <= 1 or len(data) != FLAT_LUMP_SIZE:
+            return data
+
+        step = LOSSY_FLAT_BLOCK_SIZE
+        out = bytearray(data)
+        side = 64
+
+        for y in range(0, side, step):
+            row = y * side
+            for x in range(0, side, step):
+                base = out[row + x]
+                ymax = min(y + step, side)
+                xmax = min(x + step, side)
+                for yy in range(y, ymax):
+                    dst = yy * side
+                    for xx in range(x, xmax):
+                        out[dst + xx] = base
+
+        return bytes(out)
+
+    def compress_flat_lumps(self):
+        flat_ranges = self.collect_ranges(FLAT_START_MARKERS, FLAT_END_MARKERS)
+        flat_indices = self.collect_indices_from_ranges(flat_ranges)
+
+        rewritten = 0
+        saved_bytes = 0
+
+        for idx in sorted(flat_indices):
+            lump = self.wad_file.get_lump_by_num(idx)
+            if lump is None:
+                continue
+            if lump.length != FLAT_LUMP_SIZE:
+                continue
+            if lump.data.startswith(HUFF_LUMP_MAGIC):
+                continue
+
+            flat_data = self.lossify_flat_lump(lump.data)
+            compressed = huffman_compress_block(flat_data)
+            if compressed is None:
+                continue
+
+            if len(compressed) + HUFF_MIN_SAVINGS > lump.length:
+                continue
+
+            if self.wad_file.replace_lump(idx, Lump(lump.name, compressed)):
+                rewritten += 1
+                saved_bytes += lump.length - len(compressed)
+
+        return rewritten, saved_bytes
 
     def process_level(self, lump_num):
         self.process_vertexes(lump_num)
         self.process_lines(lump_num)
         self.process_segs(lump_num)
         self.process_sides(lump_num)
+        self.process_sectors(lump_num)
+        self.process_nodes(lump_num)
+        self.process_blockmap(lump_num)
         self.compress_map_runtime_lumps(lump_num)
         self.process_pnames()
         return True
@@ -893,6 +999,8 @@ class WadProcessor:
 
         if sides is None or sides.length == 0:
             return False
+        if sides.length % 30 != 0:
+            return False
 
         side_count = sides.length // 30
         out = bytearray(side_count * 12)
@@ -920,12 +1028,276 @@ class WadProcessor:
 
         return self.wad_file.replace_lump(sides_lump_num, Lump(sides.name, bytes(out)))
 
+    def process_sectors(self, lump_num):
+        sectors_lump_num = lump_num + ML_SECTORS
+        sectors = self.wad_file.get_lump_by_num(sectors_lump_num)
+
+        if sectors is None or sectors.length == 0:
+            return False
+        if sectors.length % 26 != 0:
+            return False
+
+        sector_count = sectors.length // 26
+        out = bytearray(sector_count * 13)
+
+        for i in range(sector_count):
+            floorheight, ceilingheight, floorpic, ceilingpic, lightlevel, special, tag = struct.unpack_from(
+                "<hh8s8shhh", sectors.data, i * 26
+            )
+
+            floor_num = self.get_flat_num_for_name(floorpic)
+            ceiling_num = self.get_flat_num_for_name(ceilingpic)
+
+            if lightlevel < 0:
+                light_byte = 0
+            elif lightlevel > 255:
+                light_byte = 255
+            else:
+                light_byte = lightlevel
+
+            struct.pack_into(
+                "<hhhhBhh",
+                out,
+                i * 13,
+                to_s16(floorheight),
+                to_s16(ceilingheight),
+                to_s16(floor_num),
+                to_s16(ceiling_num),
+                light_byte,
+                to_s16(special),
+                to_s16(tag),
+            )
+
+        return self.wad_file.replace_lump(sectors_lump_num, Lump(sectors.name, bytes(out)))
+
+    def process_nodes(self, lump_num):
+        nodes_lump_num = lump_num + ML_NODES
+        nodes = self.wad_file.get_lump_by_num(nodes_lump_num)
+
+        if nodes is None or nodes.length == 0:
+            return False
+        if nodes.data.startswith(NODE_COMPACT_MAGIC):
+            return False
+        if (nodes.length % 28) != 0:
+            return False
+
+        node_count = nodes.length // 28
+        if node_count <= 0:
+            return False
+
+        parsed_nodes = []
+        for i in range(node_count):
+            values = struct.unpack_from("<hhhhhhhhhhhhHH", nodes.data, i * 28)
+            parsed_nodes.append({
+                "x": values[0],
+                "y": values[1],
+                "dx": values[2],
+                "dy": values[3],
+                "bbox": [
+                    [values[4], values[5], values[6], values[7]],
+                    [values[8], values[9], values[10], values[11]],
+                ],
+                "children": [to_u16(values[12]), to_u16(values[13])],
+            })
+
+        root_idx = node_count - 1
+        root = parsed_nodes[root_idx]
+        root_bbox = [
+            max(root["bbox"][0][0], root["bbox"][1][0]),    # top
+            min(root["bbox"][0][1], root["bbox"][1][1]),    # bottom
+            min(root["bbox"][0][2], root["bbox"][1][2]),    # left
+            max(root["bbox"][0][3], root["bbox"][1][3]),    # right
+        ]
+
+        encoded_nodes = [None] * node_count
+        encoded_seen = [False] * node_count
+
+        def clamp_q(value):
+            if value < 0:
+                return 0
+            if value > 15:
+                return 15
+            return value
+
+        def quantize_pair(parent_min, parent_max, child_min, child_max):
+            if parent_max <= parent_min:
+                return 0, 15, parent_min, parent_max
+
+            span = parent_max - parent_min
+            clamped_min = max(parent_min, min(parent_max, child_min))
+            clamped_max = max(parent_min, min(parent_max, child_max))
+
+            q_min = ((clamped_min - parent_min) * 15) // span
+            q_max = ((clamped_max - parent_min) * 15 + span - 1) // span
+
+            q_min = clamp_q(q_min)
+            q_max = clamp_q(q_max)
+
+            decoded_min = parent_min + ((q_min * span) // 15)
+            decoded_max = parent_min + ((q_max * span + 14) // 15)
+
+            return q_min, q_max, decoded_min, decoded_max
+
+        def quantize_child_bbox(parent_bbox, child_bbox):
+            q_bottom, q_top, dec_bottom, dec_top = quantize_pair(
+                parent_bbox[1], parent_bbox[0], child_bbox[1], child_bbox[0]
+            )
+            q_left, q_right, dec_left, dec_right = quantize_pair(
+                parent_bbox[2], parent_bbox[3], child_bbox[2], child_bbox[3]
+            )
+
+            qvals = [q_top, q_bottom, q_left, q_right]
+            decoded = [dec_top, dec_bottom, dec_left, dec_right]
+            return qvals, decoded
+
+        def encode_node(idx, parent_bbox):
+            if idx < 0 or idx >= node_count:
+                return
+            if encoded_seen[idx]:
+                return
+
+            node = parsed_nodes[idx]
+            q0, child_bbox0 = quantize_child_bbox(parent_bbox, node["bbox"][0])
+            q1, child_bbox1 = quantize_child_bbox(parent_bbox, node["bbox"][1])
+
+            out = bytearray(NODE_COMPACT_ENTRY_SIZE)
+            struct.pack_into(
+                "<hhhhHH",
+                out,
+                0,
+                to_s16(node["x"]),
+                to_s16(node["y"]),
+                to_s16(node["dx"]),
+                to_s16(node["dy"]),
+                to_u16(node["children"][0]),
+                to_u16(node["children"][1]),
+            )
+            out[12] = ((q0[0] & 0xF) << 4) | (q0[1] & 0xF)
+            out[13] = ((q0[2] & 0xF) << 4) | (q0[3] & 0xF)
+            out[14] = ((q1[0] & 0xF) << 4) | (q1[1] & 0xF)
+            out[15] = ((q1[2] & 0xF) << 4) | (q1[3] & 0xF)
+
+            encoded_nodes[idx] = bytes(out)
+            encoded_seen[idx] = True
+
+            child0 = node["children"][0]
+            child1 = node["children"][1]
+            if (child0 & 0x8000) == 0:
+                encode_node(child0, child_bbox0)
+            if (child1 & 0x8000) == 0:
+                encode_node(child1, child_bbox1)
+
+        encode_node(root_idx, root_bbox)
+
+        for idx in range(node_count):
+            if not encoded_seen[idx]:
+                encode_node(idx, root_bbox)
+
+        if any(entry is None for entry in encoded_nodes):
+            return False
+
+        out = bytearray(NODE_COMPACT_HEADER_SIZE + (node_count * NODE_COMPACT_ENTRY_SIZE))
+        struct.pack_into(
+            "<4sHhhhhH",
+            out,
+            0,
+            NODE_COMPACT_MAGIC,
+            to_u16(node_count),
+            to_s16(root_bbox[0]),
+            to_s16(root_bbox[1]),
+            to_s16(root_bbox[2]),
+            to_s16(root_bbox[3]),
+            0,
+        )
+
+        for i, entry in enumerate(encoded_nodes):
+            start = NODE_COMPACT_HEADER_SIZE + (i * NODE_COMPACT_ENTRY_SIZE)
+            out[start:start + NODE_COMPACT_ENTRY_SIZE] = entry
+
+        if len(out) >= nodes.length:
+            return False
+
+        return self.wad_file.replace_lump(nodes_lump_num, Lump(nodes.name, bytes(out)))
+
+    def process_blockmap(self, lump_num):
+        blockmap_lump_num = lump_num + ML_BLOCKMAP
+        blockmap = self.wad_file.get_lump_by_num(blockmap_lump_num)
+
+        if blockmap is None or blockmap.length < 8 or (blockmap.length % 2) != 0:
+            return False
+
+        short_count = blockmap.length // 2
+        shorts = list(struct.unpack_from("<" + ("h" * short_count), blockmap.data, 0))
+        width = to_u16(shorts[2])
+        height = to_u16(shorts[3])
+        block_count = width * height
+
+        if block_count <= 0 or (4 + block_count) > short_count:
+            return False
+
+        offsets = [to_u16(shorts[4 + i]) for i in range(block_count)]
+        decoded_lists = []
+
+        for offset in offsets:
+            if offset >= short_count:
+                decoded_lists.append((-1,))
+                continue
+
+            idx = offset
+            if shorts[idx] == 0:
+                idx += 1
+
+            entries = []
+            while idx < short_count:
+                value = to_s16(shorts[idx])
+                entries.append(value)
+                idx += 1
+                if value == -1:
+                    break
+                if len(entries) > 8192:
+                    break
+
+            if not entries or entries[-1] != -1:
+                entries = [-1]
+
+            decoded_lists.append(tuple(entries))
+
+        out_shorts = [shorts[0], shorts[1], shorts[2], shorts[3]]
+        out_shorts.extend([0] * block_count)
+        list_offsets = {}
+        next_offset = 4 + block_count
+
+        for i, entries in enumerate(decoded_lists):
+            offset = list_offsets.get(entries)
+            if offset is None:
+                if next_offset > 0x7FFF:
+                    return False
+                offset = next_offset
+                list_offsets[entries] = offset
+                out_shorts.extend(entries)
+                next_offset += len(entries)
+
+            out_shorts[4 + i] = to_s16(offset)
+
+        rebuilt = struct.pack("<" + ("h" * len(out_shorts)), *out_shorts)
+        if len(rebuilt) >= blockmap.length:
+            return False
+
+        return self.wad_file.replace_lump(blockmap_lump_num, Lump(blockmap.name, rebuilt))
+
     def get_texture_num_for_name(self, tex_name):
         if self.texture_map is None:
             self.texture_map = self.build_texture_lookup()
 
         tex_name_upper = decode_lump_name(tex_name).upper()
         return self.texture_map.get(tex_name_upper, 0)
+
+    def get_flat_num_for_name(self, flat_name):
+        if self.flat_map is None:
+            self.flat_map = self.build_flat_lookup()
+
+        flat_name_upper = decode_lump_name(flat_name).upper()
+        return self.flat_map.get(flat_name_upper, 0)
 
     def build_texture_lookup(self):
         texture_map = {}
@@ -965,6 +1337,21 @@ class WadProcessor:
                 texture_map[tex_name] = tex_index
 
         return base_index + count
+
+    def build_flat_lookup(self):
+        flat_map = {}
+        firstflat, _ = self.wad_file.get_lump_by_name("F_START")
+        lastflat, _ = self.wad_file.get_lump_by_name("F_END")
+
+        if firstflat == -1 or lastflat == -1 or lastflat <= firstflat:
+            return flat_map
+
+        for idx in range(firstflat + 1, lastflat):
+            name_upper = self.wad_file.lumps[idx].name.upper()
+            if name_upper:
+                flat_map[name_upper] = idx - (firstflat + 1)
+
+        return flat_map
 
     def process_pnames(self):
         lump_num, pnames_lump = self.wad_file.get_lump_by_name("PNAMES")
@@ -1012,8 +1399,8 @@ class WadProcessor:
                 in_audio_block = False
                 continue
 
-            # if name_upper in DEMO_LUMP_NAMES:
-            #     continue
+            if name_upper in DEMO_LUMP_NAMES:
+                continue
 
             if in_audio_block or self.is_audio_lump(lump):
                 continue

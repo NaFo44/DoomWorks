@@ -39,6 +39,9 @@ static char s_debug_lines[kDebugLineCount][kDebugLineWidth + 1];
 static int s_debug_line_count = 0;
 static bool s_debug_overlay_visible = false;
 static bool s_debug_choice_done = false;
+static bool s_startup_options_done = false;
+static bool s_textured_planes_enabled = true;
+static bool s_visual_extras_enabled = true;
 
 static const int kFontWidth = 7;
 static const int kLineHeight = 18;
@@ -47,6 +50,7 @@ static const int kOverlayTopPadding = 2;
 static void DrawDebugOverlay(void);
 static void DrawZoneOverlay(void);
 static void ShowDebugChoicePrompt(void);
+static void ShowStartupOptionsPrompt(void);
 static void BuildFullscreenScaleLUTs(void);
 
 static void BuildFullscreenScaleLUTs(void)
@@ -264,6 +268,100 @@ static void WaitForAnyKeyPress(void)
     }
 }
 
+static void DrawStartupOptionsScreen(int selected_item)
+{
+    char line_textured[64];
+    char line_extras[64];
+
+    snprintf(line_textured, sizeof(line_textured), "%c Textured floors/ceilings: %s",
+             selected_item == 0 ? '>' : ' ',
+             s_textured_planes_enabled ? "ON" : "OFF");
+    snprintf(line_extras, sizeof(line_extras), "%c Lights & decorative objects: %s",
+             selected_item == 1 ? '>' : ' ',
+             s_visual_extras_enabled ? "ON" : "OFF");
+
+    eadk_display_wait_for_vblank();
+
+    eadk_display_push_rect_uniform(eadk_screen_rect, eadk_color_black);
+    DrawWrappedText(
+        "Startup options:\n"
+        "UP/DOWN: select\n"
+        "OK or BACK: toggle\n"
+        "EXE: continue",
+        4,
+        8,
+        EADK_SCREEN_WIDTH - 8,
+        84,
+        eadk_color_white,
+        eadk_color_black);
+    eadk_display_draw_string(line_textured, (eadk_point_t){6, 110}, false, eadk_color_white, eadk_color_black);
+    eadk_display_draw_string(line_extras, (eadk_point_t){6, 128}, false, eadk_color_white, eadk_color_black);
+}
+
+static void ShowStartupOptionsPrompt(void)
+{
+    if (s_startup_options_done)
+    {
+        return;
+    }
+
+    s_startup_options_done = true;
+
+    int selected_item = 0;
+    eadk_keyboard_state_t prev_keys = 0;
+
+    WaitForNoKeys();
+
+    while (true)
+    {
+        eadk_keyboard_state_t keys;
+        bool up_now, down_now, ok_now, back_now, exe_now;
+        bool up_prev, down_prev, ok_prev, back_prev, exe_prev;
+
+        DrawStartupOptionsScreen(selected_item);
+        keys = eadk_keyboard_scan();
+
+        up_now = eadk_keyboard_key_down(keys, eadk_key_up);
+        down_now = eadk_keyboard_key_down(keys, eadk_key_down);
+        ok_now = eadk_keyboard_key_down(keys, eadk_key_ok);
+        back_now = eadk_keyboard_key_down(keys, eadk_key_back);
+        exe_now = eadk_keyboard_key_down(keys, eadk_key_exe);
+
+        up_prev = eadk_keyboard_key_down(prev_keys, eadk_key_up);
+        down_prev = eadk_keyboard_key_down(prev_keys, eadk_key_down);
+        ok_prev = eadk_keyboard_key_down(prev_keys, eadk_key_ok);
+        back_prev = eadk_keyboard_key_down(prev_keys, eadk_key_back);
+        exe_prev = eadk_keyboard_key_down(prev_keys, eadk_key_exe);
+
+        if ((up_now && !up_prev) || (down_now && !down_prev))
+        {
+            selected_item ^= 1;
+        }
+
+        if ((ok_now && !ok_prev) || (back_now && !back_prev))
+        {
+            if (selected_item == 0)
+                s_textured_planes_enabled = !s_textured_planes_enabled;
+            else
+                s_visual_extras_enabled = !s_visual_extras_enabled;
+        }
+
+        if (exe_now && !exe_prev)
+        {
+            break;
+        }
+
+        prev_keys = keys;
+        eadk_timing_msleep(10);
+    }
+
+    WaitForNoKeys();
+
+    lprintf(LO_ALWAYS, "[NUMWORKS] Startup options: textured=%s extras=%s",
+            s_textured_planes_enabled ? "ON" : "OFF",
+            s_visual_extras_enabled ? "ON" : "OFF");
+}
+
 static void ShowDebugChoicePrompt(void)
 {
     if (s_debug_choice_done)
@@ -312,6 +410,7 @@ static void ShowDebugChoicePrompt(void)
     WaitForNoKeys();
 
     lprintf(LO_ALWAYS, "[NUMWORKS] Debug overlay default: %s", s_debug_overlay_visible ? "ON" : "OFF");
+    ShowStartupOptionsPrompt();
 }
 
 void I_InitScreen_e32()
@@ -325,6 +424,9 @@ void I_InitScreen_e32()
     s_debug_line_count = 0;
     s_debug_overlay_visible = false;
     s_debug_choice_done = false;
+    s_startup_options_done = false;
+    s_textured_planes_enabled = true;
+    s_visual_extras_enabled = true;
 
     eadk_display_push_rect_uniform(eadk_screen_rect, eadk_color_black);
     lprintf(LO_ALWAYS, "[NUMWORKS] Screen initialized");
@@ -452,6 +554,16 @@ int I_GetTime_e32(void)
 {
     uint64_t millis = eadk_timing_millis();
     return (int)((millis * TICRATE) / 1000ULL);
+}
+
+int I_IsTexturedPlanesEnabled_e32(void)
+{
+    return s_textured_planes_enabled ? 1 : 0;
+}
+
+int I_IsVisualExtrasEnabled_e32(void)
+{
+    return s_visual_extras_enabled ? 1 : 0;
 }
 
 void I_DebugCheckpoint_e32(const char* checkpoint)

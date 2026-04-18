@@ -75,6 +75,271 @@
 
 static boolean s_visplane_cap_warned = false;
 
+#define GBADOOM_HUFF_LUMP_MAGIC 0x30465548u
+#define GBADOOM_HUFF_HEADER_SIZE 16u
+#define GBADOOM_HUFF_MAX_SYMBOLS 256u
+#define GBADOOM_HUFF_MAX_CODE_LEN 24u
+#define GBADOOM_FLAT_LUMP_SIZE 4096u
+#define GBADOOM_NODE_COMPACT_ENTRY_SIZE 16u
+
+typedef struct
+{
+    const byte* payload;
+    unsigned int payload_bits;
+    unsigned int bit_pos;
+    unsigned int raw_size;
+    unsigned int raw_pos;
+    unsigned int max_code_len;
+    unsigned int code_count[GBADOOM_HUFF_MAX_CODE_LEN + 1];
+    unsigned int first_code[GBADOOM_HUFF_MAX_CODE_LEN + 1];
+    unsigned int first_index[GBADOOM_HUFF_MAX_CODE_LEN + 1];
+    byte symbols_sorted[GBADOOM_HUFF_MAX_SYMBOLS];
+} flat_huff_reader_t;
+
+static byte s_flat_decode_buffer[GBADOOM_FLAT_LUMP_SIZE];
+static int s_flat_decode_lump = -1;
+static int s_flat_decode_mode = -1;
+
+static void R_HuffFlatError(int code, int lump_num)
+{
+    I_Error("R_HF %d %d", code, lump_num);
+}
+
+static unsigned int R_ReadU32LE(const byte* p)
+{
+    return ((unsigned int)p[0])
+        | ((unsigned int)p[1] << 8)
+        | ((unsigned int)p[2] << 16)
+        | ((unsigned int)p[3] << 24);
+}
+
+static unsigned short R_ReadU16LE(const byte* p)
+{
+    return (unsigned short)((unsigned short)p[0] | ((unsigned short)p[1] << 8));
+}
+
+static short R_ReadS16LE(const byte* p)
+{
+    return (short)R_ReadU16LE(p);
+}
+
+static boolean R_FlatHuffReadBit(flat_huff_reader_t* reader, unsigned int* bit)
+{
+    unsigned int byte_index;
+    unsigned int bit_index;
+
+    if (reader->bit_pos >= reader->payload_bits)
+        return false;
+
+    byte_index = reader->bit_pos >> 3;
+    bit_index = 7u - (reader->bit_pos & 7u);
+    *bit = ((unsigned int)reader->payload[byte_index] >> bit_index) & 1u;
+    reader->bit_pos++;
+    return true;
+}
+
+static boolean R_FlatHuffReadSymbol(flat_huff_reader_t* reader, byte* value)
+{
+    unsigned int code = 0;
+    unsigned int len;
+
+    if (reader->raw_pos >= reader->raw_size)
+        return false;
+
+    for (len = 1; len <= reader->max_code_len; len++)
+    {
+        unsigned int bit;
+        unsigned int count;
+        unsigned int base;
+
+        if (!R_FlatHuffReadBit(reader, &bit))
+            return false;
+
+        code = (code << 1) | bit;
+        count = reader->code_count[len];
+        base = reader->first_code[len];
+
+        if (count && code >= base && code < (base + count))
+        {
+            unsigned int index = reader->first_index[len] + (code - base);
+            if (index >= GBADOOM_HUFF_MAX_SYMBOLS)
+                return false;
+
+            *value = reader->symbols_sorted[index];
+            reader->raw_pos++;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static void R_InitFlatHuffReader(int lump_num, const byte* data, int lump_size, flat_huff_reader_t* reader)
+{
+    unsigned int raw_size;
+    unsigned int payload_size;
+    unsigned int symbol_count;
+    unsigned int max_code_len;
+    unsigned int table_bytes;
+    unsigned int data_offset;
+    unsigned int i;
+    byte length_by_symbol[GBADOOM_HUFF_MAX_SYMBOLS];
+
+    if (data == NULL || reader == NULL)
+        R_HuffFlatError(1, lump_num);
+
+    if (lump_size < (int)GBADOOM_HUFF_HEADER_SIZE)
+        R_HuffFlatError(2, lump_num);
+
+    if (R_ReadU32LE(data) != GBADOOM_HUFF_LUMP_MAGIC)
+        R_HuffFlatError(3, lump_num);
+
+    raw_size = R_ReadU32LE(data + 4);
+    payload_size = R_ReadU32LE(data + 8);
+    symbol_count = (unsigned int)data[12] | ((unsigned int)data[13] << 8);
+    max_code_len = (unsigned int)data[14];
+    table_bytes = symbol_count * 2u;
+    data_offset = GBADOOM_HUFF_HEADER_SIZE + table_bytes;
+
+    if (symbol_count == 0 || symbol_count > GBADOOM_HUFF_MAX_SYMBOLS)
+        R_HuffFlatError(4, lump_num);
+    if (max_code_len == 0 || max_code_len > GBADOOM_HUFF_MAX_CODE_LEN)
+        R_HuffFlatError(5, lump_num);
+    if (data_offset > (unsigned int)lump_size || payload_size > ((unsigned int)lump_size - data_offset))
+        R_HuffFlatError(6, lump_num);
+
+    memset(reader, 0, sizeof(*reader));
+    memset(length_by_symbol, 0, sizeof(length_by_symbol));
+
+    for (i = 0; i < symbol_count; i++)
+    {
+        unsigned int symbol = (unsigned int)data[GBADOOM_HUFF_HEADER_SIZE + (i * 2u)];
+        unsigned int code_len = (unsigned int)data[GBADOOM_HUFF_HEADER_SIZE + (i * 2u) + 1u];
+
+        if (length_by_symbol[symbol] != 0)
+            R_HuffFlatError(7, lump_num);
+        if (code_len == 0 || code_len > max_code_len)
+            R_HuffFlatError(8, lump_num);
+
+        length_by_symbol[symbol] = (byte)code_len;
+        reader->code_count[code_len]++;
+    }
+
+    {
+        unsigned int write_index = 0;
+        unsigned int code = 0;
+        unsigned int prev_count = 0;
+        unsigned int len;
+        unsigned int symbol;
+
+        for (len = 1; len <= max_code_len; len++)
+        {
+            reader->first_index[len] = write_index;
+            for (symbol = 0; symbol < GBADOOM_HUFF_MAX_SYMBOLS; symbol++)
+            {
+                if ((unsigned int)length_by_symbol[symbol] == len)
+                {
+                    if (write_index >= symbol_count)
+                        R_HuffFlatError(9, lump_num);
+                    reader->symbols_sorted[write_index++] = (byte)symbol;
+                }
+            }
+
+            code = (code + prev_count) << 1;
+            reader->first_code[len] = code;
+            prev_count = reader->code_count[len];
+        }
+
+        if (write_index != symbol_count)
+            R_HuffFlatError(10, lump_num);
+
+        if ((reader->first_code[max_code_len] + reader->code_count[max_code_len]) > (1u << max_code_len))
+            R_HuffFlatError(11, lump_num);
+    }
+
+    reader->payload = data + data_offset;
+    reader->payload_bits = payload_size * 8u;
+    reader->raw_size = raw_size;
+    reader->max_code_len = max_code_len;
+}
+
+static void R_DecodeFlatHuffmanLump(int lump_num, const byte* data, int lump_size, byte* out)
+{
+    flat_huff_reader_t reader;
+    unsigned int i;
+
+    R_InitFlatHuffReader(lump_num, data, lump_size, &reader);
+
+    if (reader.raw_size != GBADOOM_FLAT_LUMP_SIZE)
+        R_HuffFlatError(12, lump_num);
+
+    for (i = 0; i < GBADOOM_FLAT_LUMP_SIZE; i++)
+    {
+        if (!R_FlatHuffReadSymbol(&reader, &out[i]))
+            R_HuffFlatError(13, lump_num);
+    }
+}
+
+static byte R_DecodeFlatFirstColor(int lump_num, const byte* data, int lump_size)
+{
+    flat_huff_reader_t reader;
+    byte color;
+
+    R_InitFlatHuffReader(lump_num, data, lump_size, &reader);
+
+    if (reader.raw_size == 0)
+        R_HuffFlatError(14, lump_num);
+
+    if (!R_FlatHuffReadSymbol(&reader, &color))
+        R_HuffFlatError(15, lump_num);
+
+    return color;
+}
+
+static const byte* R_GetFlatSpanSource(int lump_num)
+{
+    const byte* lump_data = W_CacheLumpNum(lump_num);
+    int lump_size = W_LumpLength(lump_num);
+    boolean textured = _g->gbadoom_textured_planes ? true : false;
+    boolean is_huffman;
+
+    if (lump_data == NULL || lump_size <= 0)
+        R_HuffFlatError(16, lump_num);
+
+    is_huffman =
+        lump_size >= (int)GBADOOM_HUFF_HEADER_SIZE
+        && R_ReadU32LE(lump_data) == GBADOOM_HUFF_LUMP_MAGIC;
+
+    if (!textured)
+    {
+        if (s_flat_decode_lump != lump_num || s_flat_decode_mode != 0)
+        {
+            byte color = is_huffman ? R_DecodeFlatFirstColor(lump_num, lump_data, lump_size) : lump_data[0];
+            memset(s_flat_decode_buffer, color, GBADOOM_FLAT_LUMP_SIZE);
+            s_flat_decode_lump = lump_num;
+            s_flat_decode_mode = 0;
+        }
+
+        return s_flat_decode_buffer;
+    }
+
+    if (!is_huffman)
+    {
+        if (lump_size < (int)GBADOOM_FLAT_LUMP_SIZE)
+            R_HuffFlatError(17, lump_num);
+        return lump_data;
+    }
+
+    if (s_flat_decode_lump != lump_num || s_flat_decode_mode != 1)
+    {
+        R_DecodeFlatHuffmanLump(lump_num, lump_data, lump_size, s_flat_decode_buffer);
+        s_flat_decode_lump = lump_num;
+        s_flat_decode_mode = 1;
+    }
+
+    return s_flat_decode_buffer;
+}
+
 static int R_CountVisplanes(void)
 {
     int count = 0;
@@ -197,6 +462,9 @@ static byte columnCache[COLUMN_CACHE_SETS * 128];
 
 int numnodes;
 const mapnode_t *nodes;
+boolean nodes_are_compact;
+const byte *nodes_compact;
+short nodes_root_bbox[4];
 
 fixed_t  viewx, viewy, viewz;
 
@@ -357,37 +625,127 @@ static CONSTFUNC int SlopeDiv(unsigned num, unsigned den)
     return (ans <= SLOPERANGE) ? ans : SLOPERANGE;
 }
 
-//
-// R_PointOnSide
-// Traverse BSP (sub) tree,
-//  check point against partition plane.
-// Returns side 0 (front) or 1 (back).
-//
-// killough 5/2/98: reformatted
-//
-
-static PUREFUNC int R_PointOnSide(fixed_t x, fixed_t y, const mapnode_t *node)
+static const byte* R_CompactNodePtr(int nodenum)
 {
-    fixed_t dx = (fixed_t)node->dx << FRACBITS;
-    fixed_t dy = (fixed_t)node->dy << FRACBITS;
+    return nodes_compact + ((unsigned int)nodenum * GBADOOM_NODE_COMPACT_ENTRY_SIZE);
+}
 
-    fixed_t nx = (fixed_t)node->x << FRACBITS;
-    fixed_t ny = (fixed_t)node->y << FRACBITS;
+static void R_GetNodePartition(int nodenum, short* x, short* y, short* dx, short* dy)
+{
+    if (nodes_are_compact)
+    {
+        const byte* n = R_CompactNodePtr(nodenum);
+        *x = R_ReadS16LE(n + 0);
+        *y = R_ReadS16LE(n + 2);
+        *dx = R_ReadS16LE(n + 4);
+        *dy = R_ReadS16LE(n + 6);
+    }
+    else
+    {
+        const mapnode_t* node = nodes + nodenum;
+        *x = node->x;
+        *y = node->y;
+        *dx = node->dx;
+        *dy = node->dy;
+    }
+}
 
-    if (!dx)
-        return x <= nx ? node->dy > 0 : node->dy < 0;
+static unsigned short R_GetNodeChild(int nodenum, int side)
+{
+    if (nodes_are_compact)
+    {
+        const byte* n = R_CompactNodePtr(nodenum);
+        return R_ReadU16LE(n + 8 + (side * 2));
+    }
+    return nodes[nodenum].children[side];
+}
 
-    if (!dy)
-        return y <= ny ? node->dx < 0 : node->dx > 0;
+static short R_DecodeNodeCoordFloor(short base, int span, unsigned int q)
+{
+    if (span <= 0)
+        return base;
+    return (short)(base + (int)((q * (unsigned int)span) / 15u));
+}
 
-    x -= nx;
-    y -= ny;
+static short R_DecodeNodeCoordCeil(short base, int span, unsigned int q)
+{
+    if (span <= 0)
+        return base;
+    return (short)(base + (int)((q * (unsigned int)span + 14u) / 15u));
+}
 
-    // Try to quickly decide by looking at sign bits.
+static void R_GetNodeChildBBox(int nodenum, const short parent_bbox[4], int side, short out_bbox[4])
+{
+    if (!nodes_are_compact)
+    {
+        const short* src = nodes[nodenum].bbox[side];
+        out_bbox[BOXTOP] = src[BOXTOP];
+        out_bbox[BOXBOTTOM] = src[BOXBOTTOM];
+        out_bbox[BOXLEFT] = src[BOXLEFT];
+        out_bbox[BOXRIGHT] = src[BOXRIGHT];
+        return;
+    }
+
+    const byte* n = R_CompactNodePtr(nodenum);
+    unsigned int q_top;
+    unsigned int q_bottom;
+    unsigned int q_left;
+    unsigned int q_right;
+
+    if (side == 0)
+    {
+        q_top = (unsigned int)((n[12] >> 4) & 0xF);
+        q_bottom = (unsigned int)(n[12] & 0xF);
+        q_left = (unsigned int)((n[13] >> 4) & 0xF);
+        q_right = (unsigned int)(n[13] & 0xF);
+    }
+    else
+    {
+        q_top = (unsigned int)((n[14] >> 4) & 0xF);
+        q_bottom = (unsigned int)(n[14] & 0xF);
+        q_left = (unsigned int)((n[15] >> 4) & 0xF);
+        q_right = (unsigned int)(n[15] & 0xF);
+    }
+
+    {
+        int x_span = (int)parent_bbox[BOXRIGHT] - (int)parent_bbox[BOXLEFT];
+        int y_span = (int)parent_bbox[BOXTOP] - (int)parent_bbox[BOXBOTTOM];
+
+        out_bbox[BOXLEFT] = R_DecodeNodeCoordFloor(parent_bbox[BOXLEFT], x_span, q_left);
+        out_bbox[BOXRIGHT] = R_DecodeNodeCoordCeil(parent_bbox[BOXLEFT], x_span, q_right);
+        out_bbox[BOXBOTTOM] = R_DecodeNodeCoordFloor(parent_bbox[BOXBOTTOM], y_span, q_bottom);
+        out_bbox[BOXTOP] = R_DecodeNodeCoordCeil(parent_bbox[BOXBOTTOM], y_span, q_top);
+    }
+}
+
+static PUREFUNC int R_PointOnNodeSide(fixed_t x, fixed_t y, int nodenum)
+{
+    short nx, ny, dxs, dys;
+    fixed_t dx;
+    fixed_t dy;
+
+    R_GetNodePartition(nodenum, &nx, &ny, &dxs, &dys);
+    dx = (fixed_t)dxs << FRACBITS;
+    dy = (fixed_t)dys << FRACBITS;
+
+    {
+        fixed_t fx = (fixed_t)nx << FRACBITS;
+        fixed_t fy = (fixed_t)ny << FRACBITS;
+
+        if (!dx)
+            return x <= fx ? dys > 0 : dys < 0;
+
+        if (!dy)
+            return y <= fy ? dxs < 0 : dxs > 0;
+
+        x -= fx;
+        y -= fy;
+    }
+
     if ((dy ^ dx ^ x ^ y) < 0)
-        return (dy ^ x) < 0;  // (left is negative)
+        return (dy ^ x) < 0;
 
-    return FixedMul(y, node->dx) >= FixedMul(node->dy, x);
+    return FixedMul(y, dxs) >= FixedMul(dys, x);
 }
 
 //
@@ -404,7 +762,7 @@ subsector_t *R_PointInSubsector(fixed_t x, fixed_t y)
         return _g->subsectors;
 
     while (!(nodenum & NF_SUBSECTOR))
-        nodenum = nodes[nodenum].children[R_PointOnSide(x, y, nodes+nodenum)];
+        nodenum = R_GetNodeChild(nodenum, R_PointOnNodeSide(x, y, nodenum));
     return &_g->subsectors[nodenum & ~NF_SUBSECTOR];
 }
 
@@ -1483,7 +1841,7 @@ static void R_DoDrawPlane(visplane_t *pl)
 
             draw_span_vars_t dsvars;
 
-            dsvars.source = W_CacheLumpNum(_g->firstflat + flattranslation[pl->picnum]);
+            dsvars.source = R_GetFlatSpanSource(_g->firstflat + flattranslation[pl->picnum]);
             dsvars.colormap = R_LoadColorMap(pl->lightlevel);
 
             planeheight = D_abs(pl->height-viewz);
@@ -2900,11 +3258,21 @@ static boolean R_RenderBspSubsector(int bspnum)
 
 static void R_RenderBSPNode(int bspnum)
 {
-    int stack[MAX_BSP_DEPTH];
+    int node_stack[MAX_BSP_DEPTH];
+    int side_stack[MAX_BSP_DEPTH];
+    short bbox_stack[MAX_BSP_DEPTH][4];
+    short node_bbox[4];
     int sp = 0;
 
-    const mapnode_t* bsp;
     int side = 0;
+
+    if (nodes_are_compact)
+    {
+        node_bbox[BOXTOP] = nodes_root_bbox[BOXTOP];
+        node_bbox[BOXBOTTOM] = nodes_root_bbox[BOXBOTTOM];
+        node_bbox[BOXLEFT] = nodes_root_bbox[BOXLEFT];
+        node_bbox[BOXRIGHT] = nodes_root_bbox[BOXRIGHT];
+    }
 
     while(true)
     {
@@ -2920,13 +3288,27 @@ static void R_RenderBSPNode(int bspnum)
             if(sp == MAX_BSP_DEPTH)
                 break;
 
-            bsp = &nodes[bspnum];
-            side = R_PointOnSide (viewx, viewy, bsp);
+            side = R_PointOnNodeSide(viewx, viewy, bspnum);
 
-            stack[sp++] = bspnum;
-            stack[sp++] = side;
+            node_stack[sp] = bspnum;
+            side_stack[sp] = side;
+            if (nodes_are_compact)
+                memcpy(bbox_stack[sp], node_bbox, sizeof(node_bbox));
+            sp++;
 
-            bspnum = bsp->children[side];
+            if (nodes_are_compact)
+            {
+                short child_bbox[4];
+                unsigned short child = R_GetNodeChild(bspnum, side);
+                R_GetNodeChildBBox(bspnum, node_bbox, side, child_bbox);
+                bspnum = (int)child;
+                if (!(bspnum & NF_SUBSECTOR))
+                    memcpy(node_bbox, child_bbox, sizeof(node_bbox));
+            }
+            else
+            {
+                bspnum = nodes[bspnum].children[side];
+            }
         }
 
         if(sp == 0)
@@ -2936,8 +3318,10 @@ static void R_RenderBSPNode(int bspnum)
         }
 
         //Back sides.
-        side = stack[--sp];
-        bspnum = stack[--sp];
+        side = side_stack[--sp];
+        bspnum = node_stack[sp];
+        if (nodes_are_compact)
+            memcpy(node_bbox, bbox_stack[sp], sizeof(node_bbox));
 
         if (bspnum < 0 || bspnum >= numnodes)
         {
@@ -2945,13 +3329,27 @@ static void R_RenderBSPNode(int bspnum)
             return;
         }
 
-        bsp = &nodes[bspnum];
-
         // Possibly divide back space.
         //Walk back up the tree until we find
         //a node that has a visible backspace.
-        while(!R_CheckBBox (bsp->bbox[side^1]))
+        while(true)
         {
+            boolean back_visible;
+
+            if (nodes_are_compact)
+            {
+                short test_bbox[4];
+                R_GetNodeChildBBox(bspnum, node_bbox, side ^ 1, test_bbox);
+                back_visible = R_CheckBBox(test_bbox);
+            }
+            else
+            {
+                back_visible = R_CheckBBox(nodes[bspnum].bbox[side ^ 1]);
+            }
+
+            if (back_visible)
+                break;
+
             if(sp == 0)
             {
                 //back at root node and not visible. All done!
@@ -2959,19 +3357,31 @@ static void R_RenderBSPNode(int bspnum)
             }
 
             //Back side next.
-            side = stack[--sp];
-            bspnum = stack[--sp];
+            side = side_stack[--sp];
+            bspnum = node_stack[sp];
+            if (nodes_are_compact)
+                memcpy(node_bbox, bbox_stack[sp], sizeof(node_bbox));
 
             if (bspnum < 0 || bspnum >= numnodes)
             {
                 lprintf(LO_WARN, "R_RenderBSPNode: invalid backtrack node index %d", bspnum);
                 return;
             }
-
-            bsp = &nodes[bspnum];
         }
 
-        bspnum = bsp->children[side^1];
+        if (nodes_are_compact)
+        {
+            short child_bbox[4];
+            unsigned short child = R_GetNodeChild(bspnum, side ^ 1);
+            R_GetNodeChildBBox(bspnum, node_bbox, side ^ 1, child_bbox);
+            bspnum = (int)child;
+            if (!(bspnum & NF_SUBSECTOR))
+                memcpy(node_bbox, child_bbox, sizeof(node_bbox));
+        }
+        else
+        {
+            bspnum = nodes[bspnum].children[side^1];
+        }
     }
 }
 
@@ -3235,25 +3645,26 @@ boolean P_CrossBSPNode(int bspnum)
 {
     while (!(bspnum & NF_SUBSECTOR))
     {
-        const mapnode_t *bsp = nodes + bspnum;
-
         divline_t dl;
-        dl.x = ((fixed_t)bsp->x << FRACBITS);
-        dl.y = ((fixed_t)bsp->y << FRACBITS);
-        dl.dx = ((fixed_t)bsp->dx << FRACBITS);
-        dl.dy = ((fixed_t)bsp->dy << FRACBITS);
-
+        short x, y, dx, dy;
         int side,side2;
+
+        R_GetNodePartition(bspnum, &x, &y, &dx, &dy);
+        dl.x = ((fixed_t)x << FRACBITS);
+        dl.y = ((fixed_t)y << FRACBITS);
+        dl.dx = ((fixed_t)dx << FRACBITS);
+        dl.dy = ((fixed_t)dy << FRACBITS);
+
         side = P_DivlineSide(_g->los.strace.x,_g->los.strace.y,&dl)&1;
         side2= P_DivlineSide(_g->los.t2x, _g->los.t2y, &dl);
 
         if (side == side2)
-            bspnum = bsp->children[side]; // doesn't touch the other side
+            bspnum = (int)R_GetNodeChild(bspnum, side); // doesn't touch the other side
         else         // the partition plane is crossed here
-            if (!P_CrossBSPNode(bsp->children[side]))
+            if (!P_CrossBSPNode((int)R_GetNodeChild(bspnum, side)))
                 return 0;  // cross the starting side
             else
-                bspnum = bsp->children[side^1];  // cross the ending side
+                bspnum = (int)R_GetNodeChild(bspnum, side ^ 1);  // cross the ending side
     }
     return P_CrossSubsector(bspnum == -1 ? 0 : bspnum & ~NF_SUBSECTOR);
 }

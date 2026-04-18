@@ -255,6 +255,8 @@ unsigned int cheat_buffer;
 int showMessages;    // Show messages has default, 0 = off, 1 = on
 
 int alwaysRun;
+int gbadoom_textured_planes;
+int gbadoom_visual_extras;
 
 int highDetail;
 

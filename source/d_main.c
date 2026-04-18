@@ -905,6 +905,12 @@ static void D_DoomMainSetup(void)
 
     I_InitGraphics();
     NUMWORKS_CHECKPOINT("After I_InitGraphics");
+#ifdef NUMWORKS
+    _g->gbadoom_textured_planes = I_IsTexturedPlanesEnabled_e32() ? 1 : 0;
+    _g->gbadoom_visual_extras = I_IsVisualExtrasEnabled_e32() ? 1 : 0;
+    lprintf(LO_ALWAYS, "[NUMWORKS] Runtime options: textured=%d extras=%d",
+            _g->gbadoom_textured_planes, _g->gbadoom_visual_extras);
+#endif
 
     {
     #ifdef NUMWORKS

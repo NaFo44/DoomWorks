@@ -2305,6 +2305,23 @@ void P_UpdateSpecials (void)
 //
 //////////////////////////////////////////////////////////////////////
 
+static boolean P_IsPureLightSectorSpecial(int special)
+{
+    switch (special & 31)
+    {
+        case 1:  // random off
+        case 2:  // strobe fast
+        case 3:  // strobe slow
+        case 8:  // glowing light
+        case 12: // sync strobe slow
+        case 13: // sync strobe fast
+        case 17: // fire flicker
+            return true;
+        default:
+            return false;
+    }
+}
+
 //
 // P_SpawnSpecials
 // After the map has been loaded,
@@ -2332,6 +2349,14 @@ void P_SpawnSpecials (void)
     if (sector->special&SECRET_MASK) //jff 3/15/98 count extended
       _g->totalsecret++;                 // secret sectors too
 
+    if (!_g->gbadoom_visual_extras && P_IsPureLightSectorSpecial(sector->special))
+    {
+      sector->special &= ~31;
+      if (sector->special < 32 && !(sector->special & SECRET_MASK))
+        sector->special = 0;
+      continue;
+    }
+
     switch (sector->special&31)
     {
       case 1:
@@ -2351,7 +2376,8 @@ void P_SpawnSpecials (void)
 
       case 4:
         // strobe fast/death slime
-        P_SpawnStrobeFlash(sector,FASTDARK,0);
+        if (_g->gbadoom_visual_extras)
+          P_SpawnStrobeFlash(sector,FASTDARK,0);
         sector->special |= 3<<DAMAGE_SHIFT; //jff 3/14/98 put damage bits in
         break;
 

@@ -649,6 +649,19 @@ static PUREFUNC int P_FindDoomedNum(unsigned int type)
     return NUMMOBJTYPES;
 }
 
+static boolean P_IsPureDecorativeType(int type)
+{
+    const unsigned int keep_mask = MF_SPECIAL | MF_SOLID | MF_SHOOTABLE | MF_COUNTITEM | MF_COUNTKILL;
+
+    if (_g->gbadoom_visual_extras)
+        return false;
+
+    if (type < MT_MISC0 || type >= NUMMOBJTYPES)
+        return false;
+
+    return (mobjinfo[type].flags & keep_mask) == 0;
+}
+
 //
 // P_RespawnSpecials
 //
@@ -787,7 +800,13 @@ boolean P_WillSpawnMapThing(const mapthing_t* mthing)
         return false;
 
     i = P_FindDoomedNum(mthing->type);
-    return i != NUMMOBJTYPES;
+    if (i == NUMMOBJTYPES)
+        return false;
+
+    if (P_IsPureDecorativeType(i))
+        return false;
+
+    return true;
 }
 
 //
@@ -867,6 +886,9 @@ void P_SpawnMapThing (const mapthing_t* mthing)
     // warning message for the player.
 
     if (i == NUMMOBJTYPES)
+        return;
+
+    if (P_IsPureDecorativeType(i))
         return;
 
     x = mthing->x << FRACBITS;

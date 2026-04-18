@@ -74,6 +74,9 @@ extern const fixed_t iprojection;
 
 extern int numnodes;
 extern const mapnode_t *nodes;
+extern boolean nodes_are_compact;
+extern const byte *nodes_compact;
+extern short nodes_root_bbox[4];
 
 extern fixed_t  viewx, viewy, viewz;
 

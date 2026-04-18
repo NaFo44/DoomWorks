@@ -39,6 +39,8 @@ _g->gamemission = doom;
 
 _g->showMessages = 1;    // Show messages has default, 0 = off, 1 = on
 _g->alwaysRun = 1;
+_g->gbadoom_textured_planes = 1;
+_g->gbadoom_visual_extras = 1;
 
 
 //******************************************************************************
