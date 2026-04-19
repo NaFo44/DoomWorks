@@ -182,14 +182,13 @@ typedef struct linedata_s
 
 typedef struct line_s
 {
-    vertex_t v1;
-    vertex_t v2;     // Vertices, from v1 to v2.
-    unsigned int lineno;         //line number.
+    unsigned short v1;
+    unsigned short v2; // Indices into _g->vertexes.
 
     fixed_t dx, dy;        // Precalculated v2 - v1 for side checking.
 
     unsigned short sidenum[2];        // Visual appearance: SideDefs.
-    fixed_t bbox[4];        //Line bounding box.
+    short bbox[4];          // Bounding box in map units.
 
     unsigned short flags;           // Animation related.
     short const_special;
@@ -200,6 +199,10 @@ typedef struct line_s
 
 #define LN_FRONTSECTOR(l) (_g->sides[(l)->sidenum[0]].sector)
 #define LN_BACKSECTOR(l) ((l)->sidenum[1] != NO_INDEX ? _g->sides[(l)->sidenum[1]].sector : NULL)
+#define LN_V1(l) (&_g->vertexes[(l)->v1])
+#define LN_V2(l) (&_g->vertexes[(l)->v2])
+#define LN_INDEX(l) ((unsigned int)((l) - _g->lines))
+#define LN_BBOX(l, idx) ((fixed_t)((int)(l)->bbox[(idx)] << FRACBITS))
 
 #if defined(NUMWORKS) && PLATFORM_DEVICE
 #define SECTOR_LINE(sector, idx) (&_g->lines[(sector)->lines[(idx)]])
@@ -215,15 +218,15 @@ typedef struct line_s
 #define LN_SPECIAL_STAIRDIR_TOGGLED(lineno) \
     (_g->line_special_stairdir_toggled[LN_SPECIAL_WORD(lineno)] & LN_SPECIAL_MASK(lineno))
 #define LN_SPECIAL_BASE(l) \
-    ((short)((l)->const_special ^ (LN_SPECIAL_STAIRDIR_TOGGLED((l)->lineno) ? LN_SPECIAL_STAIRDIR_BIT : 0)))
-#define LN_SPECIAL(l) (LN_SPECIAL_CLEARED((l)->lineno) ? 0 : LN_SPECIAL_BASE(l))
+    ((short)((l)->const_special ^ (LN_SPECIAL_STAIRDIR_TOGGLED(LN_INDEX(l)) ? LN_SPECIAL_STAIRDIR_BIT : 0)))
+#define LN_SPECIAL(l) (LN_SPECIAL_CLEARED(LN_INDEX(l)) ? 0 : LN_SPECIAL_BASE(l))
 #define LN_CLEAR_SPECIAL(l) \
-    (_g->line_special_cleared[LN_SPECIAL_WORD((l)->lineno)] |= LN_SPECIAL_MASK((l)->lineno))
+    (_g->line_special_cleared[LN_SPECIAL_WORD(LN_INDEX(l))] |= LN_SPECIAL_MASK(LN_INDEX(l)))
 #define LN_TOGGLE_SPECIAL_STAIRDIR(l) \
-    (_g->line_special_stairdir_toggled[LN_SPECIAL_WORD((l)->lineno)] ^= LN_SPECIAL_MASK((l)->lineno))
-#define LN_VCOUNT(l) (_g->linedata[(l)->lineno].validcount)
-#define LN_RVCOUNT(l) (_g->linedata[(l)->lineno].r_validcount)
-#define LN_RFLAGS(l) (_g->linedata[(l)->lineno].r_flags)
+    (_g->line_special_stairdir_toggled[LN_SPECIAL_WORD(LN_INDEX(l))] ^= LN_SPECIAL_MASK(LN_INDEX(l)))
+#define LN_VCOUNT(l) (_g->linedata[LN_INDEX(l)].validcount)
+#define LN_RVCOUNT(l) (_g->linedata[LN_INDEX(l)].r_validcount)
+#define LN_RFLAGS(l) (_g->linedata[LN_INDEX(l)].r_flags)
 
 
 // phares 3/14/98

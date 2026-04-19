@@ -226,8 +226,8 @@ int EV_SilentLineTeleport(const line_t *line, int side, mobj_t *thing,
       {
         // Get the thing's position along the source linedef
         fixed_t pos = D_abs(line->dx) > D_abs(line->dy) ?
-          FixedDiv(thing->x - line->v1.x, line->dx) :
-          FixedDiv(thing->y - line->v1.y, line->dy) ;
+          FixedDiv(thing->x - LN_V1(line)->x, line->dx) :
+          FixedDiv(thing->y - LN_V1(line)->y, line->dy) ;
 
         // Get the angle between the two linedefs, for rotating
         // orientation and momentum. Rotate 180 degrees, and flip
@@ -237,8 +237,8 @@ int EV_SilentLineTeleport(const line_t *line, int side, mobj_t *thing,
           R_PointToAngle2(0, 0, line->dx, line->dy);
 
         // Interpolate position across the exit linedef
-        fixed_t x = l->v2.x - FixedMul(pos, l->dx);
-        fixed_t y = l->v2.y - FixedMul(pos, l->dy);
+        fixed_t x = LN_V2(l)->x - FixedMul(pos, l->dx);
+        fixed_t y = LN_V2(l)->y - FixedMul(pos, l->dy);
 
         // Sine, cosine of angle adjustment
         fixed_t s = finesine[angle>>ANGLETOFINESHIFT];

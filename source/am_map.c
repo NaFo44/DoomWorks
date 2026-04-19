@@ -768,10 +768,10 @@ static void AM_drawWalls(void)
     // draw the unclipped visible portions of all lines
     for (i=0;i<_g->numlines;i++)
     {
-        l.a.x = _g->lines[i].v1.x >> FRACTOMAPBITS;//e6y
-        l.a.y = _g->lines[i].v1.y >> FRACTOMAPBITS;//e6y
-        l.b.x = _g->lines[i].v2.x >> FRACTOMAPBITS;//e6y
-        l.b.y = _g->lines[i].v2.y >> FRACTOMAPBITS;//e6y
+        l.a.x = LN_V1(&_g->lines[i])->x >> FRACTOMAPBITS;//e6y
+        l.a.y = LN_V1(&_g->lines[i])->y >> FRACTOMAPBITS;//e6y
+        l.b.x = LN_V2(&_g->lines[i])->x >> FRACTOMAPBITS;//e6y
+        l.b.y = LN_V2(&_g->lines[i])->y >> FRACTOMAPBITS;//e6y
 
 
         const sector_t* backsector = LN_BACKSECTOR(&_g->lines[i]);

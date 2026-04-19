@@ -35,13 +35,13 @@ HUFF_COMPRESSIBLE_MAP_LUMP_OFFSETS = (
     ML_SIDEDEFS,
     ML_SSECTORS,
     ML_SECTORS,
-    ML_REJECT,
 )
 HUFF_MIN_SAVINGS = 1
 HUFF_MAX_CODE_LEN = 24
 FLAT_LUMP_SIZE = 64 * 64
-LOSSY_PATCH_COLUMN_GROUP = 7
+LOSSY_PATCH_COLUMN_GROUP = 5
 LOSSY_FLAT_BLOCK_SIZE = 2
+COMPRESS_FLATS = False
 NODE_COMPACT_MAGIC = b"NDC0"
 NODE_COMPACT_HEADER_SIZE = 16
 NODE_COMPACT_ENTRY_SIZE = 16
@@ -525,7 +525,8 @@ class WadProcessor:
     def process_wad(self):
         self.remove_unused_lumps()
         self.optimize_graphics_lumps()
-        self.compress_flat_lumps()
+        if COMPRESS_FLATS:
+            self.compress_flat_lumps()
 
         map_lump_num, _ = self.wad_file.get_lump_by_name("MAP01")
         if map_lump_num != -1:
@@ -842,7 +843,7 @@ class WadProcessor:
 
         line_count = lines.length // 14
         vtx_count = vxl.length // 8
-        out = bytearray(line_count * 56)
+        out = bytearray(line_count * 32)
 
         def get_vertex(index):
             if index < 0 or index >= vtx_count:
@@ -871,22 +872,19 @@ class WadProcessor:
             bbox_bottom = v1y if v1y < v2y else v2y
 
             struct.pack_into(
-                "<iiiiIiiHHiiiiHhhH",
+                "<HHiiHHhhhhHhhH",
                 out,
-                i * 56,
-                to_s32(v1x),
-                to_s32(v1y),
-                to_s32(v2x),
-                to_s32(v2y),
-                to_u32(i),
+                i * 32,
+                to_u16(v1),
+                to_u16(v2),
                 dx,
                 dy,
                 to_u16(side0),
                 to_u16(side1),
-                to_s32(bbox_top),
-                to_s32(bbox_bottom),
-                to_s32(bbox_left),
-                to_s32(bbox_right),
+                to_s16(bbox_top >> 16),
+                to_s16(bbox_bottom >> 16),
+                to_s16(bbox_left >> 16),
+                to_s16(bbox_right >> 16),
                 to_u16(flags),
                 to_s16(special),
                 to_s16(tag),
@@ -918,7 +916,7 @@ class WadProcessor:
 
         seg_count = segs.length // 12
         vtx_count = vxl.length // 8
-        line_count = lxl.length // 56
+        line_count = lxl.length // 32
         side_count = sxl.length // 30
 
         out = bytearray(seg_count * 32)
@@ -931,7 +929,7 @@ class WadProcessor:
         def get_line(index):
             if index < 0 or index >= line_count:
                 return None
-            return struct.unpack_from("<iiiiIiiHHiiiiHhhH", lxl.data, index * 56)
+            return struct.unpack_from("<HHiiHHhhhhHhhH", lxl.data, index * 32)
 
         def get_side_sector(index):
             if index < 0 or index >= side_count:
@@ -954,9 +952,9 @@ class WadProcessor:
                 side0 = NO_INDEX
                 side1 = NO_INDEX
             else:
-                side0 = line[7]
-                side1 = line[8]
-                line_flags = line[13]
+                side0 = line[4]
+                side1 = line[5]
+                line_flags = line[10]
                 if side in (0, 1):
                     sidenum = side0 if side == 0 else side1
                 else:

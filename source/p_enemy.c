@@ -511,10 +511,10 @@ static void P_DoNewChaseDir(mobj_t *actor, fixed_t deltax, fixed_t deltay)
 static boolean PIT_AvoidDropoff(const line_t *line)
 {
   if (LN_BACKSECTOR(line)                          && // Ignore one-sided linedefs
-      _g->tmbbox[BOXRIGHT]  > line->bbox[BOXLEFT]   &&
-      _g->tmbbox[BOXLEFT]   < line->bbox[BOXRIGHT]  &&
-      _g->tmbbox[BOXTOP]    > line->bbox[BOXBOTTOM] && // Linedef must be contacted
-      _g->tmbbox[BOXBOTTOM] < line->bbox[BOXTOP]    &&
+      _g->tmbbox[BOXRIGHT]  > LN_BBOX(line, BOXLEFT)   &&
+      _g->tmbbox[BOXLEFT]   < LN_BBOX(line, BOXRIGHT)  &&
+      _g->tmbbox[BOXTOP]    > LN_BBOX(line, BOXBOTTOM) && // Linedef must be contacted
+      _g->tmbbox[BOXBOTTOM] < LN_BBOX(line, BOXTOP)    &&
       P_BoxOnLineSide(_g->tmbbox, line) == -1)
     {
       fixed_t front = LN_FRONTSECTOR(line)->floorheight;

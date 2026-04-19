@@ -83,10 +83,10 @@ fixed_t CONSTFUNC P_AproxDistance(fixed_t dx, fixed_t dy)
 int PUREFUNC P_PointOnLineSide(fixed_t x, fixed_t y, const line_t *line)
 {
   return
-    !line->dx ? x <= line->v1.x ? line->dy > 0 : line->dy < 0 :
-    !line->dy ? y <= line->v1.y ? line->dx < 0 : line->dx > 0 :
-    FixedMul(y-line->v1.y, line->dx>>FRACBITS) >=
-    FixedMul(line->dy>>FRACBITS, x-line->v1.x);
+    !line->dx ? x <= LN_V1(line)->x ? line->dy > 0 : line->dy < 0 :
+    !line->dy ? y <= LN_V1(line)->y ? line->dx < 0 : line->dx > 0 :
+    FixedMul(y-LN_V1(line)->y, line->dx>>FRACBITS) >=
+    FixedMul(line->dy>>FRACBITS, x-LN_V1(line)->x);
 }
 
 //
@@ -105,11 +105,11 @@ int PUREFUNC P_BoxOnLineSide(const fixed_t *tmbox, const line_t *ld)
     default: // shut up compiler warnings -- killough
     case ST_HORIZONTAL:
         return
-                (tmbox[BOXBOTTOM] > ld->v1.y) == (p = tmbox[BOXTOP] > ld->v1.y) ?
+                (tmbox[BOXBOTTOM] > LN_V1(ld)->y) == (p = tmbox[BOXTOP] > LN_V1(ld)->y) ?
                     p ^ (ld->dx < 0) : -1;
     case ST_VERTICAL:
         return
-                (tmbox[BOXLEFT] < ld->v1.x) == (p = tmbox[BOXRIGHT] < ld->v1.x) ?
+                (tmbox[BOXLEFT] < LN_V1(ld)->x) == (p = tmbox[BOXRIGHT] < LN_V1(ld)->x) ?
                     p ^ (ld->dy < 0) : -1;
     case ST_POSITIVE:
         return
@@ -143,8 +143,8 @@ static int PUREFUNC P_PointOnDivlineSide(fixed_t x, fixed_t y, const divline_t *
 
 static void P_MakeDivline(const line_t *li, divline_t *dl)
 {
-  dl->x = li->v1.x;
-  dl->y = li->v1.y;
+  dl->x = LN_V1(li)->x;
+  dl->y = LN_V1(li)->y;
   dl->dx = li->dx;
   dl->dy = li->dy;
 }
@@ -459,8 +459,8 @@ boolean PIT_AddLineIntercepts(const line_t *ld)
   if (_g->trace.dx >  FRACUNIT*16 || _g->trace.dy >  FRACUNIT*16 ||
       _g->trace.dx < -FRACUNIT*16 || _g->trace.dy < -FRACUNIT*16)
     {
-      s1 = P_PointOnDivlineSide (ld->v1.x, ld->v1.y, &_g->trace);
-      s2 = P_PointOnDivlineSide (ld->v2.x, ld->v2.y, &_g->trace);
+      s1 = P_PointOnDivlineSide (LN_V1(ld)->x, LN_V1(ld)->y, &_g->trace);
+      s2 = P_PointOnDivlineSide (LN_V2(ld)->x, LN_V2(ld)->y, &_g->trace);
     }
   else
     {

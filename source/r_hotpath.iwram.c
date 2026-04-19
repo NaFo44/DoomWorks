@@ -443,7 +443,7 @@ short* negonearray = (short*)&vram2_spare[240];
 //*****************************************
 
 #if defined(NUMWORKS) && PLATFORM_DEVICE
-#define COLUMN_CACHE_SETS 16
+#define COLUMN_CACHE_SETS 32
 #else
 #define COLUMN_CACHE_SETS 128
 #endif
@@ -2248,30 +2248,25 @@ static void R_DrawColumnInCache(const column_t* patch, byte* cache, int originy,
 
 static unsigned int FindColumnCacheItem(unsigned int texture, unsigned int column)
 {
-    //static unsigned int looks, peeks;
-    //looks++;
-
     unsigned int cx = CACHE_ENTRY(column, texture);
-
     unsigned int key = CACHE_HASH(column, texture);
+    unsigned int i0 = key;
+    unsigned int i1 = key + CACHE_STRIDE;
+    unsigned int i2 = key + (CACHE_STRIDE * 2);
+    unsigned int i3 = key + (CACHE_STRIDE * 3);
+    unsigned int c0 = columnCacheEntries[i0];
+    unsigned int c1 = columnCacheEntries[i1];
+    unsigned int c2 = columnCacheEntries[i2];
+    unsigned int c3 = columnCacheEntries[i3];
 
-    unsigned int* cc = (unsigned int*)&columnCacheEntries[key];
-
-    unsigned int i = key;
-
-    do
-    {
-        //peeks++;
-        unsigned int cy = *cc;
-
-        if((cy == cx) || (cy == 0))
-            return i;
-
-        cc+=CACHE_STRIDE;
-        i+=CACHE_STRIDE;
-
-    } while(i < COLUMN_CACHE_SETS);
-
+    if ((c0 == cx) || (c0 == 0))
+        return i0;
+    if ((c1 == cx) || (c1 == 0))
+        return i1;
+    if ((c2 == cx) || (c2 == 0))
+        return i2;
+    if ((c3 == cx) || (c3 == 0))
+        return i3;
 
     //No space. Random eviction.
     return ((M_Random() & CACHE_MASK) * CACHE_STRIDE) + key;
@@ -2892,7 +2887,7 @@ static void R_StoreWallRange(const int start, const int stop)
 
 static void R_RecalcLineFlags(void)
 {
-    linedata_t* linedata = &_g->linedata[linedef->lineno];
+    linedata_t* linedata = &_g->linedata[curline->linenum];
 
     const side_t* side = &_g->sides[curline->sidenum];
 
@@ -3058,7 +3053,7 @@ static void R_AddLine (const seg_t *line)
 
     /* cph - roll up linedef properties in flags */
     linedef = &_g->lines[curline->linenum];
-    linedata_t* linedata = &_g->linedata[linedef->lineno];
+    linedata_t* linedata = &_g->linedata[curline->linenum];
 
     if (linedata->r_validcount != (_g->gametic & 0xffff))
         R_RecalcLineFlags();
@@ -3563,10 +3558,15 @@ static boolean P_CrossSubsector(int num)
 
         _g->linedata[linenum].validcount = _g->validcount;
 
-        if (line->bbox[BOXLEFT] > _g->los.bbox[BOXRIGHT ] ||
-                line->bbox[BOXRIGHT] < _g->los.bbox[BOXLEFT  ] ||
-                line->bbox[BOXBOTTOM] > _g->los.bbox[BOXTOP   ] ||
-                line->bbox[BOXTOP]    < _g->los.bbox[BOXBOTTOM])
+        const fixed_t line_left = ((fixed_t)line->bbox[BOXLEFT]) << FRACBITS;
+        const fixed_t line_right = ((fixed_t)line->bbox[BOXRIGHT]) << FRACBITS;
+        const fixed_t line_bottom = ((fixed_t)line->bbox[BOXBOTTOM]) << FRACBITS;
+        const fixed_t line_top = ((fixed_t)line->bbox[BOXTOP]) << FRACBITS;
+
+        if (line_left > _g->los.bbox[BOXRIGHT ] ||
+                line_right < _g->los.bbox[BOXLEFT  ] ||
+                line_bottom > _g->los.bbox[BOXTOP   ] ||
+                line_top < _g->los.bbox[BOXBOTTOM])
             continue;
 
         // cph - do what we can before forced to check intersection
@@ -3594,8 +3594,8 @@ static boolean P_CrossSubsector(int num)
         // Forget this line if it doesn't cross the line of sight
         const vertex_t *v1,*v2;
 
-        v1 = &line->v1;
-        v2 = &line->v2;
+        v1 = &_g->vertexes[line->v1];
+        v2 = &_g->vertexes[line->v2];
 
         if (P_DivlineSide(v1->x, v1->y, &_g->los.strace) == P_DivlineSide(v2->x, v2->y, &_g->los.strace))
             continue;

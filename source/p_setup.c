@@ -1146,20 +1146,8 @@ static void P_LoadBlockMap (int lump)
 
 static void P_LoadReject(int lumpnum)
 {
-  huff_lump_reader_t huff;
   _g->rejectlump = lumpnum + ML_REJECT;
-
-  if (P_HuffInitLumpReader(_g->rejectlump, &huff))
-  {
-    byte* decoded = Z_Malloc((int)huff.raw_size, PU_LEVEL, 0);
-    P_HuffReadBytesOrError(&huff, decoded, huff.raw_size, "P_LoadReject", _g->rejectlump);
-    P_HuffFinishOrError(&huff, "P_LoadReject", _g->rejectlump);
-    _g->rejectmatrix = decoded;
-  }
-  else
-  {
-    _g->rejectmatrix = W_CacheLumpNum(_g->rejectlump);
-  }
+  _g->rejectmatrix = W_CacheLumpNum(_g->rejectlump);
 }
 
 //
@@ -1257,8 +1245,8 @@ static int P_GroupLines (void)
         for(int l = 0; l < sector->linecount; l++)
         {
             const line_t* sl = SECTOR_LINE(sector, l);
-            M_AddToBox (bbox, sl->v1.x, sl->v1.y);
-            M_AddToBox (bbox, sl->v2.x, sl->v2.y);
+            M_AddToBox (bbox, LN_V1(sl)->x, LN_V1(sl)->y);
+            M_AddToBox (bbox, LN_V2(sl)->x, LN_V2(sl)->y);
         }
 
         sector->soundorg.x = bbox[BOXRIGHT]/2+bbox[BOXLEFT]/2;
